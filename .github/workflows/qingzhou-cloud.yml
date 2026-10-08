@@ -30,7 +30,11 @@ jobs:
           node-version: '24'
           cache: npm
       - name: 安装锁定依赖
-        run: npm ci --ignore-scripts --no-audit --no-fund
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p .runtime
+          npm ci --ignore-scripts --no-audit --no-fund 2>&1 | tee .runtime/dependencies.log
       - name: 核心与课程回归
         shell: bash
         run: |
@@ -43,7 +47,7 @@ jobs:
         with:
           name: core-diagnostics
           include-hidden-files: true
-          path: .runtime/core-test.log
+          path: .runtime/*.log
           retention-days: 14
 
   windows:
