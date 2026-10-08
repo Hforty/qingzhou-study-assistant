@@ -36,8 +36,8 @@
 
 ## 云端入口
 
-- [自动测试与构建](https://github.com/Hforty/ai-study-assistant/actions/workflows/qingzhou-cloud.yml)
-- [版本与安装包](https://github.com/Hforty/ai-study-assistant/releases)
-- [问题反馈](https://github.com/Hforty/ai-study-assistant/issues)
+- [自动测试与构建](https://github.com/Hforty/qingzhou-study-assistant/actions/workflows/qingzhou-cloud.yml)
+- [版本与安装包](https://github.com/Hforty/qingzhou-study-assistant/releases)
+- [问题反馈](https://github.com/Hforty/qingzhou-study-assistant/issues)
 
 本仓库当前内容已经替换为轻舟桌面软件源码；旧网页项目不属于当前产品。历史提交保留供追溯。
