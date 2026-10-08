@@ -1,26 +1,70 @@
 {
-  "name": "ai-study-assistant-frontend",
-  "version": "1.0.0",
-  "description": "大学生 AI 学习助手 - 前端应用",
+  "name": "qingzhou-study",
+  "version": "1.0.5",
   "private": true,
+  "main": "desktop/main.cjs",
+  "author": "Qingzhou Study",
+  "description": "轻舟 · 考研 408 学习规划与记录工具",
   "scripts": {
-    "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
-    "lint": "next lint"
+    "test": "node --test tests/*.test.mjs",
+    "desktop": "electron .",
+    "build:win": "electron-builder --win nsis --x64",
+    "test:desktop": "node scripts/verify-v105.cjs"
   },
-  "dependencies": {
-    "next": "14.1.0",
-    "react": "18.2.0",
-    "react-dom": "18.2.0"
+  "engines": {
+    "node": ">=20"
   },
   "devDependencies": {
-    "@types/node": "20.11.0",
-    "@types/react": "18.2.48",
-    "@types/react-dom": "18.2.18",
-    "autoprefixer": "10.4.17",
-    "postcss": "8.4.33",
-    "tailwindcss": "3.4.1",
-    "typescript": "5.3.3"
+    "electron": "44.5.1",
+    "electron-builder": "26.15.3",
+    "playwright": "1.63.0"
+  },
+  "build": {
+    "appId": "cn.qingzhou.study",
+    "productName": "轻舟学习助手",
+    "copyright": "Copyright © 2026 Qingzhou Study",
+    "directories": {
+      "output": "dist",
+      "buildResources": "resources"
+    },
+    "files": [
+      "desktop/**/*",
+      "resources/icon.ico",
+      "index.html",
+      "app.js",
+      "styles.css",
+      "core.mjs",
+      "curriculum.mjs",
+      "icon.svg",
+      "planner.mjs"
+    ],
+    "asar": true,
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "resources/icon.ico",
+      "artifactName": "Qingzhou-Setup-${version}-${arch}.${ext}",
+      "signExecutable": false,
+      "signAndEditExecutable": true
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "轻舟学习助手",
+      "uninstallDisplayName": "轻舟学习助手",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "installerLanguages": [
+        "zh_CN",
+        "en_US"
+      ],
+      "language": "2052",
+      "include": "resources/installer.nsh"
+    }
   }
 }
