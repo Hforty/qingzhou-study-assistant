@@ -1,6 +1,6 @@
 import { subjects, topics, activeSubjects, activeTopics } from './curriculum.mjs';
 import { evaluatePlan, taskIdentity, monday } from './planner.mjs';
-export { evaluatePlan, monday, draftStale } from './planner.mjs';
+export { evaluatePlan, monday, draftStale, defaultPlan } from './planner.mjs';
 export const RECORD_KEY='qingzhou.study.v4', BACKUP_LIMIT=30*1024*1024;
 export function createState(now=today()) {
   let examDate='2027-12-20';if(examDate<=now){examDate=`${now.slice(0,4)}-12-20`;if(examDate<=now)examDate=`${+now.slice(0,4)+1}-12-20`;}
@@ -82,7 +82,24 @@ export function validateTimer(t) {
       typeof t.running !== 'boolean' || !Number.isFinite(t.until) || t.until < 0 || !Number.isFinite(new Date(t.until).getTime()) || !validTrack(t.subject, t.examTrack)) {
     throw new Error('计时记录格式不正确。');
   }
-  return { id: t.id, subject: t.subject, duration: t.duration, remaining: t.remaining, until: t.until, running: t.running, ...(t.examTrack ? { examTrack: t.examTrack } : {}) };
+  if(t.pendingSession!==undefined&&(!record(t.pendingSession)||!validDate(t.pendingSession.date)||!Number.isFinite(t.pendingSession.minutes)||t.pendingSession.minutes<=0||t.pendingSession.minutes>t.duration/60||t.running))throw new Error('待保存的专注记录不正确。');
+  return { id: t.id, subject: t.subject, duration: t.duration, remaining: t.remaining, until: t.until, running: t.running, ...(t.examTrack ? { examTrack: t.examTrack } : {}),...(t.pendingSession?{pendingSession:{...t.pendingSession}}:{}) };
+}
+export function sessionSubjectName(session){
+  const name=subjectById[session.subject]?.name||'未知课程';
+  if(session.subject==='english')return session.examTrack==='english1'?'英语一 · 公共基础':session.examTrack==='english2'?'英语二':'英语 · 公共基础（未记录考试类型）';
+  if(subjectById[session.subject]?.group==='math'&&session.examTrack)return name+' · '+(session.examTrack==='math1'?'数学一':'数学二');
+  return name;
+}
+export function focusTimeText(minutes){
+  if(minutes<=0)return '0分钟';
+  const seconds=Math.max(1,Math.round(minutes*60)),hours=Math.floor(seconds/3600),mins=Math.floor(seconds%3600/60),secs=seconds%60;
+  return [hours?`${hours}小时`:'',mins?`${mins}分`:'',secs?`${secs}秒`:''].filter(Boolean).join('')||'0分钟';
+}
+export function sessionSnapshot(timer,date,elapsed){
+  const snapshot=timer.pendingSession||{date,minutes:Math.round(elapsed/60*100)/100};
+  if(snapshot.minutes<=0)return null;
+  return {id:timer.id,date:snapshot.date,subject:timer.subject,minutes:snapshot.minutes,...(timer.examTrack?{examTrack:timer.examTrack}:{})};
 }
 const validTrack = (subject, track) => {
   if (track === undefined) return true;
@@ -108,7 +125,7 @@ function validateVersion(s, version) {
 }
 
 export function validateState(s) {
- if(!record(s)||s.version!==4)throw new Error('1.0.5 仅支持新版 v4 备份；旧记录可导出留存。');
+ if(!record(s)||s.version!==4)throw new Error('1.0.6 支持 v4 备份；更早的旧记录可导出留存。');
  const a=s.settings;
  if(!record(a)||!['math1','math2'].includes(a.mathExam)||!['english1','english2'].includes(a.englishExam)||!['off','light','full'].includes(a.politicsMode)||!Array.isArray(a.studyDays)||a.studyDays.length>7||new Set(a.studyDays).size!==a.studyDays.length||a.studyDays.some(d=>!Number.isInteger(d)||d<0||d>6))throw new Error('学习设置不正确。');
  const checkTasks=tasks=>validateVersion({...s,version:2,settings:{...a,politics:a.politicsMode!=='off'},tasks},2);
@@ -116,21 +133,30 @@ export function validateState(s) {
  const checkMetadata=tasks=>{for(const t of tasks)if(!/^[A-Za-z0-9:_-]+$/.test(t.id)||!Number.isInteger(t.sequence)||t.sequence<0||['queued','suspended','history'].some(k=>t[k]!==undefined&&typeof t[k]!=='boolean')||['planWeek','desiredDate','originalDate'].some(k=>t[k]!==undefined&&!validDate(t[k]))||t.queueReason!==undefined&&!shortText(t.queueReason,200)||t.restrictionReason!==undefined&&!shortText(t.restrictionReason,200))throw new Error('任务计划属性损坏。');};checkMetadata(s.tasks);
  if(!record(s.weeks)||!Array.isArray(s.adjustments)||!Array.isArray(s.completions)||!Array.isArray(s.acceptedIds)||typeof s.onboardingCompleted!=='boolean'||!Number.isInteger(s.nextSequence)||s.nextSequence<1||!validDate(s.lastEvaluated))throw new Error('周计划记录不正确。');
  if(Object.keys(s.weeks).length>10000||s.adjustments.length>50000||s.completions.length>50000)throw new Error('计划记录超出范围。');
- for(const [key,w]of Object.entries(s.weeks)){if(!record(w)||!validDate(key)||monday(key)!==key||w.start!==key||!validDate(w.created)||!Array.isArray(w.original))throw new Error('原版计划损坏。');checkTasks(w.original);checkMetadata(w.original);}
- const ids=new Set();for(const x of s.adjustments){if(!record(x)||!shortText(x.id,100)||!/^[A-Za-z0-9:_-]+$/.test(x.id)||ids.has(x.id)||!validDate(x.week)||!validDate(x.created)||typeof x.active!=='boolean'||!['add','edit','delete','single','course','pause','missed'].includes(x.type))throw new Error('计划调整损坏。');ids.add(x.id);
+ if(s.taskDefinitions!==undefined){if(!record(s.taskDefinitions)||Object.keys(s.taskDefinitions).length>50000||Object.entries(s.taskDefinitions).some(([id,t])=>!record(t)||id!==t.id))throw new Error('任务来源定义损坏。');checkTasks(Object.values(s.taskDefinitions));checkMetadata(Object.values(s.taskDefinitions));}
+ for(const [key,w]of Object.entries(s.weeks)){
+  if(!record(w)||!validDate(key)||monday(key)!==key||w.start!==key||!validDate(w.created)||!Array.isArray(w.original))throw new Error('原版计划损坏。');checkTasks(w.original);checkMetadata(w.original);
+  if(w.baseline!==undefined){if(!Array.isArray(w.baseline)||!Number.isInteger(w.baselineRevision)||w.baselineRevision<1)throw new Error('默认计划版本损坏。');checkTasks(w.baseline);checkMetadata(w.baseline);}
+  if(w.baselineUpdated!==undefined&&!validDate(w.baselineUpdated))throw new Error('默认计划更新时间损坏。');
+  if(w.baselineSettings!==undefined)validateState({...s,settings:w.baselineSettings,weeks:{},taskDefinitions:undefined,tasks:[],acceptedIds:[],adjustments:[],completions:[],draft:null,restrictions:[]});
+ }
+ const ids=new Set();for(const x of s.adjustments){if(!record(x)||!shortText(x.id,100)||!/^[A-Za-z0-9:_-]+$/.test(x.id)||ids.has(x.id)||!validDate(x.week)||!validDate(x.created)||typeof x.active!=='boolean'||!['add','edit','delete','single','course','pause','missed','allocation'].includes(x.type))throw new Error('计划调整损坏。');ids.add(x.id);
  if(x.type==='add'){checkTasks([x.task]);checkMetadata([x.task]);}
  if(['edit','delete','single'].includes(x.type)&&!shortText(x.taskId,100))throw new Error('任务关联损坏。');
  if(x.type==='edit'&&(!record(x.patch)||Object.keys(x.patch).some(k=>!['title','subject','topicId','kind','minutes','date','origin'].includes(k))))throw new Error('编辑内容损坏。');
  if(x.type==='pause'&&!topicById[x.topicId])throw new Error('暂停内容损坏。');
  if(x.type==='single'&&!validDate(x.to))throw new Error('顺延日期损坏。');
  if(x.type==='course'&&(!subjectById[x.subject]||!validDate(x.from)))throw new Error('课程顺延损坏。');
- if(x.type==='missed'&&(!shortText(x.sourceKey,150)||!validDate(x.from)||!subjectById[x.subject]||!Array.isArray(x.moves)||x.moves.some(m=>!record(m)||!shortText(m.id,100)||!validDate(m.date))))throw new Error('自动顺延损坏。');}
+ if(x.type==='missed'&&(!shortText(x.sourceKey,150)||!validDate(x.from)||!subjectById[x.subject]||!Array.isArray(x.moves)||x.moves.some(m=>!record(m)||!shortText(m.id,100)||!validDate(m.date))))throw new Error('自动顺延损坏。');
+ if(x.type==='allocation'&&(x.automatic!==true||!Array.isArray(x.moves)||x.moves.length>50000||new Set(x.moves.map(m=>m.id)).size!==x.moves.length||x.moves.some(m=>!record(m)||!shortText(m.id,100)||!validDate(m.date))))throw new Error('自动规划位置损坏。');}
  const facts=new Set();for(const f of s.completions){if(facts.has(f.id)||facts.has(f.identity))throw new Error('完成记录重复。');facts.add(f.id);facts.add(f.identity);if(!record(f)||!shortText(f.id,100)||!validDate(f.date)||f.identity!==taskIdentity(f.task))throw new Error('完成记录损坏。');checkTasks([f.task]);}
  if(s.draft!==null){const d=s.draft;if(!record(d)||!validDate(d.week)||!validDate(d.created)||!Array.isArray(d.tasks)||!Array.isArray(d.adjustments)||!Array.isArray(d.intents)||!shortText(d.basedOn,25*1024*1024)||!Array.isArray(d.summary))throw new Error('计划草案损坏。');checkTasks(d.tasks);checkMetadata(d.tasks);validateState({...s,weeks:{...s.weeks,[d.week]:{start:d.week,created:d.created,original:[...new Map([...(s.weeks[d.week]?.original||[]),...d.tasks].map(t=>[t.id,t])).values()]}},draft:null,adjustments:d.adjustments});}
  if(s.restrictions!==undefined&&(!Array.isArray(s.restrictions)||s.restrictions.some(r=>!record(r)||!shortText(r.id,250)||!shortText(r.taskId,100)||!validDate(r.from)||r.to!==null&&!validDate(r.to)||!shortText(r.reason,200))))throw new Error('学习日限制记录损坏。');
  if(s.acceptedIds.length>50000||s.acceptedIds.some(id=>!shortText(id,100)))throw new Error('任务关联不正确。');
- const definitions=[...Object.values(s.weeks).flatMap(w=>w.original),...s.adjustments.filter(a=>a.type==='add').map(a=>a.task),...(s.draft?.tasks||[])];
+ const definitions=[...Object.values(s.taskDefinitions||{}),...Object.values(s.weeks).flatMap(w=>[...w.original,...(w.baseline||[])]),...s.adjustments.filter(a=>a.type==='add').map(a=>a.task),...(s.draft?.tasks||[])];
  const known=new Set(definitions.map(t=>t.id));if(s.acceptedIds.some(id=>!known.has(id)))throw new Error('任务原始来源丢失。');
+ if(s.taskDefinitions!==undefined&&s.acceptedIds.some(id=>!Object.hasOwn(s.taskDefinitions,id)))throw new Error('独立任务来源定义丢失。');
+ for(const a of [...s.adjustments,...(s.draft?.adjustments||[])])if(a.type==='allocation'&&a.moves.some(m=>!known.has(m.id)))throw new Error('重新规划的任务来源丢失。');
  for(const t of s.tasks){if(t.history){if(!s.completions.some(f=>t.id==='history:'+f.id))throw new Error('历史完成来源丢失。');}else if(!known.has(t.id)||!s.acceptedIds.includes(t.id))throw new Error('正式任务来源丢失。');if(t.done&&!s.completions.some(f=>f.identity===taskIdentity(t)||t.history&&t.id==='history:'+f.id))throw new Error('独立完成事实丢失。');}
  for(const a of [...s.adjustments,...(s.draft?.adjustments||[])])if(a.type==='edit'){const target=definitions.find(t=>t.id===a.taskId);if(!target)throw new Error('编辑任务来源不存在。');checkTasks([{...target,...a.patch}]);}
  if(s.draft?.intents.some(i=>!record(i)||!['add','edit','delete','single','course','pause','cancel-adjustment'].includes(i.type)))throw new Error('草案编辑意图损坏。');

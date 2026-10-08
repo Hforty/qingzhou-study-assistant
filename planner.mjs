@@ -5,6 +5,18 @@ export function monday(date) { return addDays(date,-((new Date(`${date}T12:00:00
 const copy = v => structuredClone(v);
 const order = new Map(topics.map((t,i)=>[t.id,i]));
 const sortTasks = (a,b) => a.date.localeCompare(b.date)||(order.get(a.topicId)??99999)-(order.get(b.topicId)??99999)||a.sequence-b.sequence;
+export const defaultPlan = week => week?.baseline || week?.original || [];
+function ensureSources(s) {
+  const legacy=s.taskDefinitions===undefined;
+  s.taskDefinitions ||= {};
+  for (const w of Object.values(s.weeks)) {
+    w.baseline ||= copy(w.original);
+    w.baselineRevision ||= 1;
+    for (const t of w.original) s.taskDefinitions[t.id] ||= copy(t);
+  }
+  for (const a of s.adjustments) if (a.type === 'add') s.taskDefinitions[a.task.id] ||= copy(a.task);
+  if(legacy&&s.tasks.some(t=>!t.history&&!t.done))addAdjustment(s,{type:'allocation',automatic:true,legacy:true,moves:s.tasks.filter(t=>!t.history&&!t.done).map(t=>({id:t.id,date:t.date}))},s.lastEvaluated);
+}
 export const taskIdentity = t => JSON.stringify([t.id,t.title,t.subject,t.topicId??null,t.kind,t.minutes]);
 function eligible(t,s) { return taskInCurriculum(t,s.settings)&& !(t.origin==='auto'&&t.subject==='politics'&&s.settings.politicsMode==='off'); }
 function paused(s,id) { return s.adjustments.some(a=>a.active&&a.type==='pause'&&a.topicId===id); }
@@ -15,21 +27,21 @@ function facts(s, tasks) {
 }
 function definitions(s) {
   const map=new Map();
-  for(const w of Object.values(s.weeks).sort((a,b)=>a.start.localeCompare(b.start)))for(const t of w.original)if(s.acceptedIds.includes(t.id)&&!map.has(t.id))map.set(t.id,copy(t));
-  for(const a of s.adjustments.filter(a=>a.active)) {
-    if(a.type==='add')map.set(a.task.id,copy(a.task));
-    if(a.type==='edit'&&map.has(a.taskId))map.set(a.taskId,{...map.get(a.taskId),...copy(a.patch)});
-    if(a.type==='delete')map.delete(a.taskId);
-  }
+  const baselineIds = new Set(Object.values(s.weeks).flatMap(w => [...w.original, ...defaultPlan(w)]).map(t => t.id));
+  for (const t of Object.values(s.taskDefinitions || {})) if (s.acceptedIds.includes(t.id) && (baselineIds.has(t.id) || !s.adjustments.some(a => a.type === 'add' && a.task.id === t.id) || s.adjustments.some(a => a.active && a.type === 'add' && a.task.id === t.id))) map.set(t.id, copy(t));
+  for(const w of Object.values(s.weeks).sort((a,b)=>a.start.localeCompare(b.start)))for(const t of defaultPlan(w))if(s.acceptedIds.includes(t.id))map.set(t.id,copy(t));
   let tasks=[...map.values()];
   for(const a of s.adjustments.filter(a=>a.active)) {
+    if(a.type==='add'&&!tasks.some(t=>t.id===a.task.id))tasks.push(copy(a.task));
+    if(a.type==='edit'){const t=tasks.find(t=>t.id===a.taskId);if(t)Object.assign(t,copy(a.patch));}
+    if(a.type==='delete')tasks=tasks.filter(t=>t.id!==a.taskId);
     if(a.type==='single') {const t=tasks.find(t=>t.id===a.taskId);if(t)t.date=a.to;}
     if(a.type==='course') {
       const list=tasks.filter(t=>t.subject===a.subject&&t.date>=a.from&&!s.completions.some(f=>f.identity===taskIdentity(t))).sort(sortTasks);
       let floor=a.from,previous=null,target=null;
       for(const t of list){const date=t.date;if(date!==previous){floor=nextStudy(s.settings,addDays(date>floor?date:floor,1))||addDays(s.settings.examDate,1);target=floor;previous=date;}t.date=target;}
     }
-    if(a.type==='missed')for(const m of a.moves){const t=tasks.find(t=>t.id===m.id);if(t)t.date=m.date;}
+    if(a.type==='missed'||a.type==='allocation')for(const m of a.moves){const t=tasks.find(t=>t.id===m.id);if(t)t.date=m.date;}
   }
   return facts(s,tasks).filter(t=>t.done||eligible(t,s));
 }
@@ -55,9 +67,8 @@ function fit(s,t,date,tasks,limit=timeBudget(s.settings).full) {
 }
 function arrange(s, now) {
   const tasks=definitions(s), placed=tasks.filter(t=>t.done), pending=tasks.filter(t=>!t.done);
-  // A rest-day restriction is the same course relay as a missed day, but reversible.
-  for(const subject of new Set(pending.map(t=>t.subject))){let previous=null,floor=null,target=null;for(const t of pending.filter(t=>t.subject===subject).sort(sortTasks)){const wanted=t.date;t.desiredDate=wanted;if(t.topicId&&paused(s,t.topicId)&&t.origin==='auto')continue;if(wanted!==previous){target=nextStudy(s.settings,wanted);if(target&&floor&&target<=floor)target=nextStudy(s.settings,addDays(floor,1));previous=wanted;floor=target||addDays(s.settings.examDate,1);}t.date=target||wanted;}}
-  while(pending.length){pending.sort(sortTasks);const t=pending.shift();
+  for (const t of pending) t.desiredDate = t.date;
+  while(pending.length){pending.sort((a,b)=>a.date.localeCompare(b.date)||(a.origin==='manual'?0:1)-(b.origin==='manual'?0:1)||sortTasks(a,b));const t=pending.shift();
     t.queued=false;delete t.queueReason;
     if(t.topicId&&paused(s,t.topicId)&&t.origin==='auto'){t.suspended=true;placed.push(t);continue;}delete t.suspended;
     const original=t.desiredDate||t.date;let date=nextStudy(s.settings,t.date);
@@ -65,7 +76,7 @@ function arrange(s, now) {
     while(date&&!fit(s,t,date,placed))date=nextStudy(s.settings,addDays(date,1));
     t.originalDate=original;
     if(!date){t.queued=true;t.queueReason=!s.settings.studyDays.length?'没有可学习日':t.minutes>timeBudget(s.settings).full?'任务时长超过每日预算，未缩短':'考试日前没有可容纳的日期';}
-    else {const prior=t.date;t.date=date;if(date>prior){let previous=null,floor=date,target=null;for(const following of pending.filter(x=>x.subject===t.subject&&x.desiredDate!==t.desiredDate).sort(sortTasks)){const wanted=following.date;if(wanted!==previous){target=wanted<=floor?(nextStudy(s.settings,addDays(floor,1))||addDays(s.settings.examDate,1)):wanted;previous=wanted;floor=target;}following.date=target;}}if(date!==original)t.restrictionReason=!isStudyDay(s.settings,original)?'学习日限制顺延':'预算或政治配额顺延';else delete t.restrictionReason;}
+    else {const prior=t.date;t.date=date;if(date>prior){let previous=null,floor=date,target=null;for(const following of pending.filter(x=>x.subject===t.subject&&x.desiredDate!==t.desiredDate).sort(sortTasks)){const wanted=following.date;if(wanted!==previous){target=wanted<=floor?(nextStudy(s.settings,addDays(floor,1))||addDays(s.settings.examDate,1)):wanted;previous=wanted;floor=target;}following.date=target;}}if(date!==original)t.restrictionReason=!isStudyDay(s.settings,original)?'学习日变更重新规划':'预算或政治配额顺延';else delete t.restrictionReason;}
     placed.push(t);
   }
   s.tasks=placed;s.restrictions=placed.filter(t=>!t.done&&!t.suspended&&(t.restrictionReason||t.queued)).map(t=>({id:`restriction:${t.id}:${t.originalDate}:${t.date}`,taskId:t.id,week:t.planWeek||monday(now),from:t.originalDate,to:t.queued?null:t.date,reason:t.queueReason||t.restrictionReason}));
@@ -95,21 +106,21 @@ function newContent(s,start,now, base) {
   for(const f of s.completions)if(f.task.kind==='learn')represented.add(f.task.topicId);
   const subjects=activeSubjects(s.settings).filter(x=>x.id!=='politics');
   const tracks={math:['math','math1extra','linear','probability'],cs:['ds','co','os','net'],english:['english','english1extra']};
-  function next(group) {for(const id of tracks[group]){const t=activeTopics(s.settings).find(t=>t.subject===id&&!represented.has(t.id)&&!paused(s,t.id));if(t)return t;}return null;}
+  function next(group,date) {for(const id of tracks[group]){const t=activeTopics(s.settings).find(t=>t.subject===id&&!represented.has(t.id)&&!paused(s,t.id));if(t&&(!date||!result.some(prior=>!prior.done&&!prior.suspended&&prior.kind==='learn'&&prior.subject===id&&(prior.queued||prior.date>date)&&!s.adjustments.some(a=>a.active&&a.type==='single'&&a.taskId===prior.id))))return t;}return null;}
   const make=(topic,date,kind='learn',minutes=topic.minutes)=>({id:`task:${start}:${s.nextSequence}`,baselineItemId:`original:${start}:${s.nextSequence}`,planWeek:start,sequence:s.nextSequence++,title:topic.title,topicId:topic.id,subject:topic.subject,minutes,kind,origin:'auto',date,done:false,queued:false});
   // Fill using existing later-week tasks from other courses before new catalogue entries.
   for(let date=now>start?now:start;date<=end&&date<s.settings.examDate;date=addDays(date,1)) {
     if(!isStudyDay(s.settings,date))continue;
     const budget=timeBudget(s.settings), mode=s.settings.politicsMode;
     const shiftedCourses=new Set(s.adjustments.filter(a=>a.active&&(a.type==='single'||a.type==='course')).filter(a=>(a.from||a.date)===date).map(a=>a.subject));
-    const later=result.filter(t=>t.origin==='auto'&&!t.done&&!t.queued&&!t.suspended&&t.date>date&&t.date<=end&&!shiftedCourses.has(t.subject)&&!s.adjustments.some(a=>a.active&&(a.taskId===t.id&&(a.type==='single'||a.type==='edit'&&(a.patch.date!==undefined||a.patch.minutes!==undefined))||a.type==='course'&&a.subject===t.subject&&t.date>=a.from))).sort(sortTasks);
+    const later=result.filter(t=>t.origin==='auto'&&!t.done&&!t.queued&&!t.suspended&&t.date>date&&t.date<=end&&!shiftedCourses.has(t.subject)&&!protectedTask(s,t)).sort(sortTasks);
     for(const t of later){const saved=t.date;const rest=result.filter(x=>x.id!==t.id);if(fit(s,t,date,rest,budget.normal)&&!rest.some(x=>x.date===date&&x.subject===t.subject&&!x.queued&&!x.suspended)){t.date=date;}else t.date=saved;}
     // At most one new item from each main group per pass; rotate by accumulated group time.
     for(let pass=0;pass<12;pass++) {
       const ratios={math:.42,cs:.36,english:.22};
       const groups=Object.keys(ratios).sort((a,b)=>result.filter(t=>t.date>=start&&t.date<=end&&subjectById[t.subject].group===a&&!t.queued).reduce((n,t)=>n+t.minutes,0)/ratios[a]-result.filter(t=>t.date>=start&&t.date<=end&&subjectById[t.subject].group===b&&!t.queued).reduce((n,t)=>n+t.minutes,0)/ratios[b]);
       let added=false;
-      for(const g of groups){const topic=next(g);if(!topic||shiftedCourses.has(topic.subject))continue;const t=make(topic,date);const cap=budget.normal-(mode==='full'?politicalCap(s.settings,date):0);if(fit(s,t,date,result,cap)){result.push(t);represented.add(topic.id);added=true;break;}}
+      for(const g of groups){const topic=next(g,date);if(!topic||shiftedCourses.has(topic.subject))continue;const t=make(topic,date);const cap=budget.normal-(mode==='full'?politicalCap(s.settings,date):0);if(fit(s,t,date,result,cap)){result.push(t);represented.add(topic.id);added=true;break;}}
       if(!added)break;
     }
     if(mode!=='off'){
@@ -126,19 +137,73 @@ function newContent(s,start,now, base) {
   for(const {t:topic,kind,minutes}of visits){if(paused(s,topic.id)||result.some(t=>!t.done&&t.topicId===topic.id&&t.kind===kind)||topic.subject==='politics'&&s.settings.politicsMode!=='full')continue;for(let date=now>start?now:start;date<=end&&date<s.settings.examDate;date=addDays(date,1)){if(!isStudyDay(s.settings,date))continue;const t=make(topic,date,kind,minutes);if(fit(s,t,date,result)){result.push(t);break;}}}
   return result;
 }
-function baseSignature(s) { return JSON.stringify([s.settings,s.tasks,s.adjustments,s.completions,s.progress,s.weakPoints]); }
+function protectedTask(s,t) {
+  return s.adjustments.some(a=>a.active&&(a.taskId===t.id&&(a.type==='single'||a.type==='edit'&&(a.patch.date!==undefined||a.patch.minutes!==undefined))||a.type==='course'&&a.subject===t.subject&&t.date>=a.from||a.type==='missed'&&a.moves.some(m=>m.id===t.id)));
+}
+// One catalogue-ordered allocator is used for preview and learning-day replacement.
+function layoutWeek(s, start, now) {
+  const end=addDays(start,6), first=now>start?now:start, budget=timeBudget(s.settings);
+  const scoped=t=>t.origin==='auto'&&!t.done&&!t.suspended&&(t.planWeek<=start||t.date<=end);
+  const movable=s.tasks.filter(t=>scoped(t)&&!protectedTask(s,t)).map(copy);
+  const result=s.tasks.filter(t=>!movable.some(x=>x.id===t.id)).map(copy);
+  movable.sort((a,b)=>(a.kind==='learn'?0:1)-(b.kind==='learn'?0:1)||(order.get(a.topicId)??99999)-(order.get(b.topicId)??99999)||a.sequence-b.sequence);
+  for(const t of movable){t.queued=false;delete t.queueReason;delete t.restrictionReason;}
+  const weights={math:.42,cs:.36,english:.22};
+  for(let date=first;date<=end&&date<s.settings.examDate;date=addDays(date,1)){
+    if(!isStudyDay(s.settings,date))continue;
+    for(let pass=0;pass<movable.length+30;pass++){
+      const groups=Object.keys(weights).sort((a,b)=>result.filter(t=>t.date>=start&&t.date<=end&&!t.queued&&!t.suspended&&subjectById[t.subject].group===a).reduce((n,t)=>n+t.minutes,0)/weights[a]-result.filter(t=>t.date>=start&&t.date<=end&&!t.queued&&!t.suspended&&subjectById[t.subject].group===b).reduce((n,t)=>n+t.minutes,0)/weights[b]);
+      let found=-1;
+      for(const g of groups){const i=movable.findIndex(t=>t.kind==='learn'&&subjectById[t.subject].group===g);if(i>=0&&fit(s,movable[i],date,result,budget.normal-(s.settings.politicsMode==='full'?politicalCap(s.settings,date):0))){found=i;break;}}
+      if(found<0)break;
+      const [t]=movable.splice(found,1);t.date=date;t.desiredDate=date;t.originalDate=date;result.push(t);
+    }
+    for(let i=0;i<movable.length;i++){const t=movable[i];if((t.subject==='politics'||t.kind!=='learn')&&fit(s,t,date,result)){t.date=date;t.desiredDate=date;t.originalDate=date;result.push(t);movable.splice(i--,1);}}
+  }
+  for(const t of movable){let date=nextStudy(s.settings,end>=first?addDays(end,1):first);if(t.minutes>budget.full)date=null;while(date&&!fit(s,t,date,result))date=nextStudy(s.settings,addDays(date,1));if(date){t.date=date;t.originalDate=date;t.desiredDate=date;}else{t.date=first;t.queued=true;t.queueReason=!s.settings.studyDays.length?'没有可学习日':t.minutes>budget.full?'任务时长超过每日预算，未缩短':'考试日前没有可容纳的日期';}result.push(t);}
+  return !s.settings.studyDays.length&&s.tasks.some(t=>!t.done)?result:newContent(s,start,now,result);
+}
+function registerTasks(s,tasks){for(const t of tasks)if(!t.history)s.taskDefinitions[t.id] ||= copy(t);}
+function replaceDefault(s,week,now){
+  for(const a of s.adjustments)if(a.type==='allocation')a.active=false;
+  const base=copy(s);
+  for(const a of base.adjustments)if(a.type!=='missed')a.active=false;
+  arrange(base,now);
+  const tasks=layoutWeek(base,week,now);
+  s.nextSequence=base.nextSequence;
+  registerTasks(s,tasks);
+  const previous=s.weeks[week];
+  const baseline=tasks.filter(t=>!t.history&&(t.done?monday(t.date)===week:t.planWeek<=week||monday(t.date)===week));
+  s.weeks[week]={...(previous||{start:week,created:now,original:copy(baseline)}),baseline:copy(baseline),baselineRevision:(previous?.baselineRevision||0)+1,baselineUpdated:now,baselineSettings:copy(s.settings)};
+  s.acceptedIds=[...new Set([...s.acceptedIds,...baseline.map(t=>t.id)])];
+  arrange(s,now);
+  const current=layoutWeek(s,week,now);
+  registerTasks(s,current);
+  for(const t of current)if(!t.history&&!s.acceptedIds.includes(t.id)){s.acceptedIds.push(t.id);addAdjustment(s,{type:'add',task:copy(t),automatic:true},now);}
+  // Allocation is a system event after existing intent, never replayed as a delay.
+  addAdjustment(s,{type:'allocation',automatic:true,moves:current.filter(t=>!t.history&&!t.done).map(t=>({id:t.id,date:t.date}))},now);
+  arrange(s,now);s.draft=null;s.planNeedsReview=false;
+}
+function baseSignature(s) { return JSON.stringify([s.settings,s.tasks,s.adjustments,s.completions,s.progress,s.weakPoints,Object.values(s.weeks).map(w=>[w.start,w.baselineRevision])]); }
 export function evaluatePlan(state,{today:now=today(),command={type:'tick'}}={}) {
   const s=copy(state), type=command.type, week=monday(command.week||now), summary=[];
-  if(type==='settings'){s.settings=copy(command.settings);s.planNeedsReview=true;}
-  if(type==='cancel-adjustment'){const a=s.adjustments.find(a=>a.id===command.id);if(a&&a.type!=='missed')a.active=false;}
+  ensureSources(s);
+  if(type==='settings'){
+    const changedDays=JSON.stringify([...s.settings.studyDays].sort())!==JSON.stringify([...command.settings.studyDays].sort());
+    const changed=JSON.stringify(s.settings)!==JSON.stringify(command.settings);
+    if(changedDays)missed(s,now);
+    s.settings=copy(command.settings);if(changed)s.planNeedsReview=true;
+    if(changedDays){replaceDefault(s,monday(now),now);s.lastEvaluated=now;return {state:s,summary:['学习日已变更，本周默认计划与当前安排已重新规划。'],prompts:s.tasks.filter(t=>t.queued).map(t=>`${t.title}：${t.queueReason}`)};}
+  }
+  if(type==='cancel-adjustment'){const a=s.adjustments.find(a=>a.id===command.id);if(a&&a.type!=='missed'&&a.type!=='allocation'){a.active=false;for(const x of s.adjustments)if(x.type==='allocation')x.active=false;}}
   if(type==='restore'){
     const w=s.weeks[week];if(!w)throw new Error('本周尚未生成原版计划。');
     const count=s.adjustments.filter(a=>a.week===week&&a.active&&a.type!=='missed').length;
     for(const a of s.adjustments)if(a.week===week&&a.type!=='missed')a.active=false;
-    s.acceptedIds=[...new Set([...s.acceptedIds,...w.original.map(t=>t.id)])];s.draft=null;summary.push(`撤销本周 ${count} 项人为修改；保留 ${s.completions.length} 条完成记录。`);
+    s.acceptedIds=[...new Set([...s.acceptedIds,...defaultPlan(w).map(t=>t.id)])];s.draft=null;summary.push(`撤销本周 ${count} 项人为修改；保留 ${s.completions.length} 条完成记录。`);
   }
   if(['single','course','pause','edit','add','delete'].includes(type)){
-    if(type==='add')s.acceptedIds=[...new Set([...s.acceptedIds,command.task.id])];
+    if(type==='add'){s.acceptedIds=[...new Set([...s.acceptedIds,command.task.id])];registerTasks(s,[command.task]);}
     const task=s.tasks.find(t=>t.id===command.taskId);if(task?.done)throw new Error('已完成任务不能移动或删除。');
     if(type==='delete'&&task?.origin!=='manual')throw new Error('自动任务请使用顺延或永久暂停。');
     const fields={...copy(command)};delete fields.week;
@@ -149,8 +214,9 @@ export function evaluatePlan(state,{today:now=today(),command={type:'tick'}}={})
   }
   arrange(s,now);missed(s,now);
   if(type==='generate'||type==='regenerate') {
-    const before=copy(s.tasks), tasks=newContent(s,week,now,before);
+    const before=copy(s.tasks), tasks=layoutWeek(s,week,now);
     if(!s.weeks[week])s.weeks[week]={start:week,created:now,original:copy(tasks.filter(t=>!t.history&&t.date>=week&&t.date<=addDays(week,6)))};
+    ensureSources(s);
     // First-generation original must exist without activating its new tasks.
     s.draft={week,created:now,tasks,adjustments:copy(s.adjustments),basedOn:baseSignature(s),intents:[],summary:[`新增 ${tasks.filter(t=>!before.some(x=>x.id===t.id)).length} 项；原版保持不变。`]};
     s.tasks=before;
@@ -159,7 +225,7 @@ export function evaluatePlan(state,{today:now=today(),command={type:'tick'}}={})
     if(!s.draft)throw new Error('没有计划草案。');
     const working=copy(s);working.tasks=copy(s.draft.tasks);working.adjustments=copy(s.draft.adjustments);
     // Seed draft-only task definitions for evaluating editing intent.
-    working.weeks[week]={...working.weeks[week],original:[...working.weeks[week].original,...s.draft.tasks.filter(t=>!definitions(working).some(x=>x.id===t.id))]};working.acceptedIds=[...new Set([...working.acceptedIds,...s.draft.tasks.filter(t=>!t.history).map(t=>t.id)])];working.draft=null;
+    registerTasks(working,s.draft.tasks);working.acceptedIds=[...new Set([...working.acceptedIds,...s.draft.tasks.filter(t=>!t.history).map(t=>t.id)])];working.draft=null;
     const result=evaluatePlan(working,{today:now,command:command.intent});
     s.nextSequence=result.state.nextSequence;s.draft.tasks=result.state.tasks;s.draft.adjustments=result.state.adjustments;s.draft.intents.push({...copy(command.intent),reference:copy(working.tasks.find(t=>t.id===command.intent.taskId)||null)});
   }
@@ -172,9 +238,9 @@ export function evaluatePlan(state,{today:now=today(),command={type:'tick'}}={})
     if(d.created!==now||d.basedOn!==baseSignature(s))throw new Error('草案需要重新核对，编辑意图已保留。');
     const known=new Set(definitions(s).map(t=>t.id));
     s.adjustments=copy(d.adjustments);s.acceptedIds=[...new Set([...s.acceptedIds,...d.tasks.filter(t=>!t.history).map(t=>t.id)])];
+    registerTasks(s,d.tasks);
     for(const t of d.tasks)if(!t.history&&!known.has(t.id)&&!Object.values(s.weeks).some(w=>w.original.some(x=>x.id===t.id))&&!s.adjustments.some(a=>a.type==='add'&&a.task.id===t.id))addAdjustment(s,{type:'add',task:copy(t)},now);
-    // Preserve advanced existing tasks in the confirmed arrangement.
-    for(const t of d.tasks){const prior=s.tasks.find(x=>x.id===t.id);if(prior&&!prior.done&&prior.date!==t.date&&!s.adjustments.some(a=>a.active&&a.type==='edit'&&a.taskId===t.id&&a.patch.date===t.date))addAdjustment(s,{type:'edit',taskId:t.id,patch:{date:t.date}},now);}
+    addAdjustment(s,{type:'allocation',automatic:true,moves:d.tasks.filter(t=>!t.history&&!t.done).map(t=>({id:t.id,date:t.date}))},now);
     s.draft=null;s.planNeedsReview=false;arrange(s,now);
   }
   if(type==='cancel-draft')s.draft=null;

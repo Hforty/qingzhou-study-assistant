@@ -1,0 +1,28 @@
+name: 问题反馈
+description: 报告轻舟的使用问题或改进建议
+title: "[问题] "
+body:
+  - type: input
+    id: version
+    attributes:
+      label: 软件版本和 Windows 版本
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 操作步骤
+      description: 请写出如何再次遇到问题。
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: 实际结果与期望结果
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 截图或报错
+      description: 仓库公开，请遮盖隐私，不要上传个人学习记录备份或凭据。

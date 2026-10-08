@@ -1,0 +1,166 @@
+name: 轻舟云端测试与发布
+
+on:
+  push:
+    branches: [main, 'feature/**', 'fix/**', 'codex/**']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qingzhou-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TZ: Asia/Shanghai
+
+jobs:
+  core:
+    name: 核心测试
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - name: 安装锁定依赖
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: 核心与课程回归
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p .runtime
+          npm test 2>&1 | tee .runtime/core-test.log
+      - name: 保留核心测试日志
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: core-diagnostics
+          include-hidden-files: true
+          path: .runtime/core-test.log
+          retention-days: 14
+
+  windows:
+    name: Windows 桌面、安装与升级
+    needs: core
+    runs-on: windows-latest
+    timeout-minutes: 50
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ffaf81d0af50b02bc6e870b5277a9b98e16ee0ef
+          path: .runtime/baseline-v105
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: '24'
+          cache: npm
+      - name: 配置云端时区与隔离目录
+        shell: pwsh
+        run: |
+          Set-TimeZone -Id 'China Standard Time'
+          $workspace = Join-Path $env:RUNNER_TEMP "qingzhou-cloud-$env:GITHUB_RUN_ID-$env:GITHUB_RUN_ATTEMPT"
+          New-Item -ItemType Directory -Path $workspace -Force | Out-Null
+          "QINGZHOU_CLOUD_WORKSPACE=$workspace" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "QINGZHOU_BASELINE_DIR=$(Join-Path $env:GITHUB_WORKSPACE '.runtime/baseline-v105')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: 安装锁定的桌面构建依赖
+        shell: pwsh
+        run: |
+          npm ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          npm --prefix .runtime/baseline-v105 ci --no-audit --no-fund
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: 构建独立 Windows 安装包
+        shell: pwsh
+        run: |
+          npm run build:win -- --publish never 2>&1 | Tee-Object -FilePath .runtime/build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/verify-packaged.cjs 2>&1 | Tee-Object -FilePath .runtime/package-check.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: 桌面交互回归
+        shell: pwsh
+        run: |
+          npm run test:desktop 2>&1 | Tee-Object -FilePath .runtime/desktop-test.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: 构建新旧隔离升级安装包
+        shell: pwsh
+        run: |
+          node scripts/cloud-build-verification.cjs 2>&1 | Tee-Object -FilePath .runtime/verification-build.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: 覆盖升级与旧备份回归
+        shell: pwsh
+        run: |
+          node scripts/verify-upgrade-v106.cjs 2>&1 | Tee-Object -FilePath .runtime/upgrade-test.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item -LiteralPath (Join-Path $env:QINGZHOU_CLOUD_WORKSPACE 'upgrade-verification.json') -Destination .runtime/upgrade-verification.json
+      - name: 保留诊断日志和截图
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: windows-diagnostics
+          include-hidden-files: true
+          path: |
+            .runtime/*.log
+            .runtime/*.png
+            .runtime/upgrade-verification.json
+            dist/builder-debug.yml
+          if-no-files-found: warn
+          retention-days: 14
+      - name: 上传通过验收的安装包
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: qingzhou-windows-x64
+          path: |
+            dist/Qingzhou-Setup-*-x64.exe
+            dist/SHA256SUMS.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+  release:
+    name: 版本草稿与安装包
+    needs: [core, windows]
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: 下载通过验收的安装包
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run download "${{ github.run_id }}" --repo "${{ github.repository }}" --name qingzhou-windows-x64 --dir release-assets
+      - name: 创建或更新版本草稿
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p 'require("./package.json").version')"
+          tag="v$version"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1; then
+            draft="$(gh release view "$tag" --repo "${{ github.repository }}" --json isDraft --jq '.isDraft')"
+            if [ "$draft" != 'true' ]; then
+              echo 'This version is already published; use a new version number. Existing release is unchanged.'
+              exit 0
+            fi
+            gh release edit "$tag" --repo "${{ github.repository }}" --target "${{ github.sha }}" --notes-file CHANGELOG.md
+            gh release upload "$tag" release-assets/* --repo "${{ github.repository }}" --clobber
+          else
+            gh release create "$tag" release-assets/* --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "轻舟学习助手 $version" --notes-file CHANGELOG.md --draft
+          fi

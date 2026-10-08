@@ -1,6 +1,6 @@
 {
   "name": "qingzhou-study",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "private": true,
   "main": "desktop/main.cjs",
   "author": "Qingzhou Study",
@@ -9,7 +9,7 @@
     "test": "node --test tests/*.test.mjs",
     "desktop": "electron .",
     "build:win": "electron-builder --win nsis --x64",
-    "test:desktop": "node scripts/verify-v105.cjs"
+    "test:desktop": "node scripts/verify-v106.cjs"
   },
   "engines": {
     "node": ">=20"

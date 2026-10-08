@@ -30,7 +30,7 @@ function makeMenu() {
     { label: '轻舟', submenu: [
       { id: 'study-settings', label: '设置与备份', enabled: studyReady, accelerator: 'CmdOrCtrl+,', click: () => go('settings') },
       { type: 'separator' },
-      { label: '关于轻舟', click: () => dialog.showMessageBox(mainWindow, { type: 'info', title: '关于轻舟', message: `轻舟学习助手 ${app.getVersion()}`, detail: '整理考研知识、制定计划与记录进步。\n\n数学一/二、英语一/二可分别选择；包含计算机 408 与思想政治规划。\n1.0.5 使用新版独立记录；旧版原始数据保留。' }) },
+      { label: '关于轻舟', click: () => dialog.showMessageBox(mainWindow, { type: 'info', title: '关于轻舟', message: `轻舟学习助手 ${app.getVersion()}`, detail: '整理考研知识、制定计划与记录进步。\n\n数学一/二、英语一/二可分别选择；包含计算机 408 与思想政治规划。\n1.0.6 保留 v4 本机记录；可随时备份。' }) },
       { label: '退出', accelerator: 'CmdOrCtrl+Q', role: 'quit' }
     ] },
     { label: '编辑', submenu: [{ role: 'undo', label: '撤销' }, { role: 'redo', label: '重做' }, { type: 'separator' }, { role: 'cut', label: '剪切' }, { role: 'copy', label: '复制' }, { role: 'paste', label: '粘贴' }, { role: 'selectAll', label: '全选' }] },
