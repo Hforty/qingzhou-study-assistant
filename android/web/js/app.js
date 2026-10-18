@@ -9,7 +9,7 @@ const labels={home:'首页',plan:'学习计划',focus:'专注空间',progress:'�
 const navs=['home','plan','focus','progress','settings'];
 const today=()=>Core.dateKey();
 const duration=seconds=>Core.formatDuration(Math.max(0,seconds));
-const version=()=>globalThis.QingzhouAndroid?.version?.()||'1.0.0';
+const version=()=>globalThis.QingzhouAndroid?.version?.()||'1.0.1';
 let store,state,error='',page='home',week=Core.monday(today()),settingsDirty=false;
 let query='',expanded=new Set(),beforeSearch=null,focusSubject='math',focusDuration=1500;
 let recordsFilter={type:'all',subject:'all',from:'',to:'',page:1},lastTimerId='',interval;
@@ -244,7 +244,7 @@ async function endFocus(){
 }
 function exportBackup(raw=false){
   try{
-    const content=raw?(globalThis.QingzhouAndroid?.readState?.()??store?.raw??error):makeBackup(state);
+    const content=raw?(createBackend().read()??store?.raw??error):makeBackup(state);
     if(globalThis.QingzhouAndroid)globalThis.QingzhouAndroid.exportBackup(content);
     else{const blob=new Blob([content],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='轻舟学习备份-'+today()+'.json';link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
   }catch(failure){banner(failure.message);}

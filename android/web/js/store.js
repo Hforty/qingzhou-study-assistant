@@ -42,10 +42,20 @@ export class Store {
 export function createBackend(host=globalThis) {
   const native=host.QingzhouAndroid;
   if(native)return {
-    read:()=>native.readState(),
+    read:()=>{
+      const response=native.readState();
+      if(typeof response!=='string')throw new Error('本机存储接口没有返回有效结果，请关闭应用后重试。');
+      let result;try{result=JSON.parse(response);}catch{throw new Error('本机存储接口返回异常，原记录未被改动。');}
+      if(!result||result.ok!==true)throw new Error(result?.message||'读取本机记录失败，请重试。');
+      if(result.exists===false&&result.raw===null)return null;
+      if(result.exists===true&&typeof result.raw==='string')return result.raw;
+      throw new Error('本机存储接口返回异常，原记录未被改动。');
+    },
     write:(raw,expected)=>{
-      const result=JSON.parse(native.saveState(raw,expected));
-      if(!result.ok)throw new Error(result.message||'保存失败，请重试。');
+      const response=native.saveState(raw,expected);
+      if(typeof response!=='string')throw new Error('保存接口没有返回有效结果，请重试。');
+      let result;try{result=JSON.parse(response);}catch{throw new Error('保存接口返回异常，请重试。');}
+      if(result?.ok!==true)throw new Error(result?.message||'保存失败，请重试。');
     }
   };
   return {

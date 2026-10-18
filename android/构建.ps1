@@ -19,7 +19,7 @@ try {
     if($Task -eq 'assembleRelease'){
         $apk=Join-Path $PSScriptRoot 'app/build/outputs/apk/release/app-release.apk'
         if(-not(Test-Path -LiteralPath $apk)){throw '未生成已签名 APK'}
-        $output=Join-Path $root '安装包/轻舟学习助手-Android-1.0.0.apk'
+        $output=Join-Path $root '安装包/轻舟学习助手-Android-1.0.1.apk'
         Copy-Item -LiteralPath $apk -Destination $output -Force
         Get-FileHash -LiteralPath $output -Algorithm SHA256|Format-List
         Write-Output "APK: $output"

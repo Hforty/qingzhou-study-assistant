@@ -117,7 +117,16 @@ public class MainActivity extends Activity {
         });
     }
     final class Bridge {
-        @JavascriptInterface public String readState() { return DataStore.read(MainActivity.this); }
+        @JavascriptInterface public String readState() {
+            // A Java String null becomes JS undefined in WebView. Always return a non-null envelope.
+            try {
+                String raw=DataStore.read(MainActivity.this);
+                return new JSONObject().put("ok",true).put("exists",raw!=null)
+                    .put("raw",raw==null?JSONObject.NULL:raw).toString();
+            } catch(Exception error) {
+                return "{\"ok\":false,\"message\":\"读取本机记录失败，请关闭应用后重试。\"}";
+            }
+        }
         @JavascriptInterface public String saveState(String value,String expected) {
             try {
                 DataStore.write(MainActivity.this,value,expected);

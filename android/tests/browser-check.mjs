@@ -78,9 +78,9 @@ try{
   const bridgeSource=[
     'window.__failSave=false;',
     'window.QingzhouAndroid={',
-    'readState(){return localStorage.getItem("native-record")},',
+    'readState(){const raw=localStorage.getItem("native-record");return JSON.stringify({ok:true,exists:raw!==null,raw});},',
     'saveState(value,expected){if(window.__failSave)return JSON.stringify({ok:false,message:"测试保存失败"});if(localStorage.getItem("native-record")!==expected)return JSON.stringify({ok:false,message:"测试冲突"});localStorage.setItem("native-record",value);return JSON.stringify({ok:true});},',
-    'version(){return "1.0.0"},feedback(){},copyEmail(){},openContact(){},openReleases(){},exportBackup(){},importBackup(){}',
+    'version(){return "1.0.1"},feedback(){},copyEmail(){},openContact(){},openReleases(){},exportBackup(raw){window.__exported=raw;},importBackup(){}',
     '};'
   ].join('\n');
   await send('Page.addScriptToEvaluateOnNewDocument',{source:bridgeSource});
@@ -89,12 +89,18 @@ try{
   await evaluate('localStorage.clear();location.reload()');
   await waitFor(()=>evaluate('!!document.querySelector("#onboarding-form")'),'首次引导');
   await test('首次引导独立显示，确认后生成计划',async()=>{
+    assert.equal(await evaluate('localStorage.getItem("native-record")'),null);
     assert.equal(await evaluate('document.querySelectorAll(".bottom-nav").length'),0);
     await shot('UI-首次引导');
     await click('#onboarding-form button[type=submit]');await click('dialog .confirm');
     await waitFor(()=>evaluate('!!document.querySelector(".bottom-nav")'),'进入首页');
     assert.equal((await state()).onboardingCompleted,true);assert.ok((await state()).tasks.length>0);
     await shot('UI-首页');
+  });
+  await test('保存后关闭页面重开仍跳过引导并保留原记录',async()=>{
+    const old=await state();await evaluate('location.reload()');
+    await waitFor(()=>evaluate('!!document.querySelector(".bottom-nav")'),'已有记录重开');
+    assert.deepEqual(await state(),old);assert.equal(await evaluate('!!document.querySelector("#onboarding-form")'),false);
   });
   let first=(await state()).tasks.find(t=>!t.done&&!t.queued&&!t.suspended);
   await test('首页真实点击开始，正确课程自动计时且倒计时变化',async()=>{
@@ -151,6 +157,7 @@ try{
     const backup=await evaluate('(async()=>{const mod=await import("./js/store.js");return mod.makeBackup(QingzhouTest.getState());})()');
     await evaluate('localStorage.setItem("native-record","{broken");location.reload()');await waitFor(()=>evaluate('!!document.querySelector(".recovery")'),'恢复界面');
     assert.equal(await evaluate('localStorage.getItem("native-record")'),'{broken');await shot('UI-损坏记录保护');
+    await click('[data-action=export-raw]');assert.equal(await evaluate('window.__exported'),'{broken');
     await evaluate('Qingzhou.nativeEvent("import",'+JSON.stringify(backup)+')');await click('dialog .confirm');
     assert.equal((await state()).settings.name,'安卓验收');assert.ok((await state()).sessions.length>0);
   });
