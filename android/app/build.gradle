@@ -1,0 +1,40 @@
+plugins { id 'com.android.application' }
+def signingPath = System.getenv('QINGZHOU_RELEASE_CONFIG')
+def releaseKey = signingPath && file(signingPath).exists() ? new groovy.json.JsonSlurper().parse(file(signingPath), 'UTF-8') : null
+android {
+    namespace 'cn.qingzhou.study'
+    compileSdk 36
+    buildFeatures { buildConfig true }
+    defaultConfig {
+        applicationId 'cn.qingzhou.study'
+        minSdk 26
+        targetSdk 36
+        versionCode providers.gradleProperty('qingzhouVersionCode').getOrElse('1').toInteger()
+        versionName providers.gradleProperty('qingzhouVersionName').getOrElse('1.0.0')
+    }
+    signingConfigs {
+        if (releaseKey) {
+            release {
+                storeFile file(releaseKey.storeFile)
+                storePassword releaseKey.storePassword
+                keyAlias releaseKey.keyAlias
+                keyPassword releaseKey.keyPassword
+            }
+        }
+    }
+    buildTypes {
+        debug { applicationIdSuffix '.debug' }
+        release {
+            minifyEnabled false
+            if (releaseKey) signingConfig signingConfigs.release
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    sourceSets.main.assets.srcDirs = ['../web']
+}
+dependencies {
+    implementation 'androidx.webkit:webkit:1.14.0'
+}

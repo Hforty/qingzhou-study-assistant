@@ -1,0 +1,16 @@
+pluginManagement {
+    repositories {
+        maven { url "https://redirector.gvt1.com/edgedl/android/maven2" }
+        gradlePluginPortal()
+        mavenCentral()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        maven { url "https://redirector.gvt1.com/edgedl/android/maven2" }
+        mavenCentral()
+    }
+}
+rootProject.name = "QingzhouAndroid"
+include ':app'
