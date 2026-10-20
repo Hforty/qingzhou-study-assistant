@@ -80,7 +80,7 @@ try{
     'window.QingzhouAndroid={',
     'readState(){const raw=localStorage.getItem("native-record");return JSON.stringify({ok:true,exists:raw!==null,raw});},',
     'saveState(value,expected){if(window.__failSave)return JSON.stringify({ok:false,message:"测试保存失败"});if(localStorage.getItem("native-record")!==expected)return JSON.stringify({ok:false,message:"测试冲突"});localStorage.setItem("native-record",value);return JSON.stringify({ok:true});},',
-    'version(){return "1.0.1"},feedback(){},copyEmail(){},openContact(){},openReleases(){},exportBackup(raw){window.__exported=raw;},importBackup(){}',
+    'version(){return "1.1.0"},feedback(){},copyEmail(){},openContact(){},openReleases(){},exportBackup(raw){window.__exported=raw;},importBackup(){},recoveryList(){return JSON.stringify({ok:true,items:[]});}',
     '};'
   ].join('\n');
   await send('Page.addScriptToEvaluateOnNewDocument',{source:bridgeSource});
@@ -153,6 +153,65 @@ try{
     for(const view of ['home','plan','focus','progress','settings','records']){await page(view);assert.ok(await evaluate('document.documentElement.scrollWidth<=window.innerWidth+1'),view+' 横向溢出');}
     await shot('UI-320px小屏');await send('Emulation.setDeviceMetricsOverride',{width:393,height:852,deviceScaleFactor:1,mobile:true});
   });
+  await test('首页重点操作首屏可见，计划过去日期默认收起',async()=>{
+    await page('home');assert.ok(await evaluate('document.querySelector(".hero-start").getBoundingClientRect().bottom<innerHeight-70'));
+    assert.equal(await evaluate('document.querySelectorAll(".task-edit").length'),0);await shot('110-首页');
+    await page('plan');assert.equal(await evaluate('[...document.querySelectorAll(".past-days")].every(x=>!x.open)'),true);assert.ok(await evaluate('document.querySelectorAll(".task-edit").length>0'));await shot('110-计划');
+  });
+  await test('顺延后撤销保留期间新增的完成记录',async()=>{
+    const before=await state(),task=before.tasks.find(t=>!t.done&&!t.queued&&!t.suspended&&t.date===before.lastProcessedDate),other=before.tasks.find(t=>t.id!==task.id&&!t.done&&!t.queued&&!t.suspended&&t.date===before.lastProcessedDate);
+    assert.ok(task&&other);await click('[data-edit="'+task.id+'"]');await click('[data-menu=delay]');
+    assert.ok((await state()).tasks.find(t=>t.id===task.id).date>task.date);
+    await swipe(other.id);assert.equal((await state()).tasks.find(t=>t.id===other.id).done,true);
+    await click('[data-action=undo-plan]');const result=await state();assert.equal(result.tasks.find(t=>t.id===task.id).date,task.date);assert.equal(result.tasks.find(t=>t.id===other.id).done,true);assert.ok(result.completions.some(c=>c.taskId===other.id));
+    await shot('110-撤销保留完成');
+  });
+  await test('重新安排显示影响摘要，取消不写入，确认不改原版',async()=>{
+    const before=await state(),raw=JSON.stringify(before),original=JSON.stringify(before.defaultWeek);
+    await click('[data-action=generate]');assert.ok(await evaluate('!!document.querySelector("dialog .sheet-body")'));await shot('110-影响摘要');await click('dialog .cancel');assert.equal(JSON.stringify(await state()),raw);
+    await click('[data-action=generate]');await click('dialog .confirm');assert.equal(JSON.stringify((await state()).defaultWeek),original);
+  });
+  await test('原版为只读，恢复默认摘要可以返回',async()=>{
+    await click('[data-action=original]');assert.equal(await evaluate('document.querySelectorAll("dialog .task-edit").length'),0);
+    await click('.restore-default');await click('dialog:last-of-type .cancel');assert.ok(await evaluate('!!document.querySelector(".restore-default")'));await click('dialog .close');
+  });
+  await test('新增查漏保留输入，后台返回不会丢表单',async()=>{
+    await page('progress');await input('#progress-search','函数与基本初等函数');await click('[data-topic-info="math-0-0"]');await click('.mark-weak');await input('#weak-reason','定义还没记牢，下次自己复述');
+    await evaluate('Qingzhou.nativeEvent("resume")');assert.equal(await evaluate('document.querySelector("#weak-reason").value'),'定义还没记牢，下次自己复述');
+    await click('dialog .close');await click('dialog:last-of-type .cancel');assert.equal(await evaluate('document.querySelector("#weak-reason").value'),'定义还没记牢，下次自己复述');
+    await input('#weak-date',(await state()).lastProcessedDate);await click('.save-weak');assert.equal((await state()).weakPoints['math-0-0'].reason,'定义还没记牢，下次自己复述');
+  });
+  await test('查漏加入计划不重复，掌握自评不被改变',async()=>{
+    const level=(await state()).progress['math-0-0'].level;
+    await click('[data-topic-info="math-0-0"]');await click('.schedule-review');await click('[data-topic-info="math-0-0"]');await click('.schedule-review');
+    const current=await state();assert.equal(current.tasks.filter(t=>t.reviewKey==='math-0-0:1').length,1);assert.equal(current.progress['math-0-0'].level,level);await input('#progress-search','');await click('[data-action=toggle-weak]');await shot('110-查漏补缺');
+  });
+  await test('进度搜索保留同一个输入节点和焦点',async()=>{
+    await evaluate('window.__inputNode=document.querySelector("#progress-search");window.__inputNode.focus()');await input('#progress-search','函数');assert.equal(await evaluate('document.querySelector("#progress-search")===window.__inputNode'),true);assert.equal(await evaluate('document.activeElement===window.__inputNode'),true);await input('#progress-search','');
+  });
+  let manualId;
+  await test('手动补记进入完整记录与周总结',async()=>{
+    await page('records');const initial=(await state()).sessions.reduce((n,s)=>n+s.seconds,0);await click('[data-action=manual-session]');await input('#manual-session-form select[name=subject]','english');await input('#manual-session-form input[name=minutes]','37');await input('#manual-session-form textarea','离线阅读补记');await click('.save-session');
+    const current=await state(),manual=current.sessions.find(s=>s.note==='离线阅读补记');assert.ok(manual);manualId=manual.id;assert.equal(manual.source,'manual');assert.equal(current.sessions.reduce((n,s)=>n+s.seconds,0),initial+2220);
+    await page('summary');assert.ok(await evaluate('document.querySelector(".summary-hero").textContent.includes("37分")'));await shot('110-周总结');
+  });
+  await test('手动补记可编辑，取消删除不会丢记录',async()=>{
+    await page('records');await click('[data-session-edit="'+manualId+'"]');await input('#manual-session-form input[name=minutes]','40');await click('.save-session');assert.equal((await state()).sessions.find(s=>s.id===manualId).seconds,2400);
+    await click('[data-session-edit="'+manualId+'"]');await click('.delete-session');await click('dialog:last-of-type .cancel');assert.ok((await state()).sessions.some(s=>s.id===manualId));await click('dialog .close');
+  });
+  await test('恢复点入口可退出且不改现有记录',async()=>{
+    await page('settings');const before=JSON.stringify(await state());await click('[data-action=recovery-list]');assert.ok(await evaluate('document.querySelector("dialog").textContent.includes("自动恢复点")'));await click('.close-recovery');assert.equal(JSON.stringify(await state()),before);
+  });
+  await test('深色和减少动画遵循系统，不重建正在输入的表单',async()=>{
+    await input('#name','外观切换时保留');await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:'dark'},{name:'prefers-reduced-motion',value:'reduce'}]});await sleep(100);assert.equal(await evaluate('document.documentElement.dataset.theme'),'dark');assert.equal(await evaluate('document.querySelector("#name").value'),'外观切换时保留');assert.equal(await evaluate('getComputedStyle(document.querySelector(".button")).transitionDuration'),'0s');await shot('110-深色设置');
+    await input('#name','安卓验收');await click('.save-settings');await page('home');await shot('110-深色首页');await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:'light'},{name:'prefers-reduced-motion',value:'no-preference'}]});
+  });
+  await test('升级页面在320px与大字体布局中不横向溢出',async()=>{
+    await send('Emulation.setDeviceMetricsOverride',{width:320,height:700,deviceScaleFactor:1,mobile:true});
+    for(const view of ['home','plan','focus','progress','settings','records','summary']){await page(view);assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),view+' 横向溢出');}
+    await page('home');await evaluate('document.querySelectorAll("h1,h2,strong,small,p,button,span,input").forEach(x=>{x.style.fontSize=parseFloat(getComputedStyle(x).fontSize)*1.5+"px"})');assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));await shot('110-320px大字体');
+    await send('Emulation.setDeviceMetricsOverride',{width:393,height:852,deviceScaleFactor:1,mobile:true});
+  });
   await test('损坏记录不覆盖，完整备份可恢复',async()=>{
     const backup=await evaluate('(async()=>{const mod=await import("./js/store.js");return mod.makeBackup(QingzhouTest.getState());})()');
     await evaluate('localStorage.setItem("native-record","{broken");location.reload()');await waitFor(()=>evaluate('!!document.querySelector(".recovery")'),'恢复界面');
@@ -162,6 +221,9 @@ try{
     assert.equal((await state()).settings.name,'安卓验收');assert.ok((await state()).sessions.length>0);
   });
   assert.deepEqual(runtimeErrors,[]);
+  await sleep(2700);
+  for(const [view,label] of [['home','首页'],['plan','计划'],['progress','进度'],['focus','专注'],['summary','周总结'],['settings','设置']]){await page(view);await evaluate('window.scrollTo({top:0,behavior:"instant"})');await shot('交付-'+label);}
+  await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:'dark'}]});await page('home');await evaluate('window.scrollTo({top:0,behavior:"instant"})');await shot('交付-深色首页');
   await writeFile(resolve(out,'界面验收结果.json'),JSON.stringify({status:'pass',viewport:'393×852 / 320×700',checks,runtimeErrors,scope:'已安装 Edge 执行真实点击与触摸；原生通知和安装需 Android 真机验收'},null,2));
   console.log('UI checks: '+checks.length+' passed');
 }catch(error){

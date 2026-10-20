@@ -13,7 +13,7 @@ const planned = (settings = {}) => generateWeek(Object.assign(createState(NOW), 
 
 test('new record validates and transaction round-trips', () => {
   const storage = memory(), state = createState(NOW);
-  assert.equal(load(storage, NOW).schemaVersion, 1);
+  assert.equal(load(storage, NOW).schemaVersion, 2);
   assert.deepEqual(save(storage, state), state);
   assert.equal(JSON.stringify(state), storage.getItem(STORAGE_KEY));
 });

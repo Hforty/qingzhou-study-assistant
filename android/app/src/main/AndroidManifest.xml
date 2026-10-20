@@ -7,7 +7,7 @@
         android:theme="@style/AppTheme" android:allowBackup="false" android:supportsRtl="true"
         android:usesCleartextTraffic="false">
         <activity android:name=".MainActivity" android:exported="true"
-            android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize|keyboardHidden">
+            android:windowSoftInputMode="adjustResize" android:configChanges="orientation|screenSize|keyboardHidden|uiMode|fontScale|screenLayout|smallestScreenSize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
@@ -17,5 +17,9 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="User-initiated local study Pomodoro countdown with pause, resume and end controls"/>
         </service>
+        <receiver android:name=".StudyWidget" android:exported="false" android:label="轻舟今日学习">
+            <intent-filter><action android:name="android.appwidget.action.APPWIDGET_UPDATE"/></intent-filter>
+            <meta-data android:name="android.appwidget.provider" android:resource="@xml/study_widget"/>
+        </receiver>
     </application>
 </manifest>

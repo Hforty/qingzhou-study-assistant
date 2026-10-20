@@ -30,10 +30,11 @@ export const uid = prefix => `${prefix}-${Date.now().toString(36)}-${Math.random
 
 export function createState(now = dateKey()) {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     settings: { name: '同学', examDate: autoExamDate(now), examDateMode: 'auto', dailyHours: 4, mathExam: 'math2', englishExam: 'english2', politicsMode: 'light', studyDays: [0, 1, 2, 3, 4, 5, 6] },
     tasks: [], completions: [], sessions: [], progress: {}, pausedTopics: [], defaultWeek: null,
-    timer: null, onboardingCompleted: false, lastProcessedDate: now, nextId: 1
+    timer: null, onboardingCompleted: false, lastProcessedDate: now, nextId: 1,
+    weakPoints: {}, weeklyPlans: {}, weekReports:{}, adjustments: [], lastUndo: null
   };
 }
 
@@ -44,7 +45,11 @@ const validTask = task => task && typeof task.id === 'string' && typeof task.tit
   (!task.topicId || topicById[task.topicId]?.subject === task.subject);
 
 export function validateState(state) {
-  if (!state || state.schemaVersion !== 1) throw new Error('学习记录格式不正确。');
+  if (!state || ![1,2].includes(state.schemaVersion)) throw new Error('学习记录格式不正确。');
+  state=copy(state);
+  state.schemaVersion=2;
+  state.weakPoints??={};state.weeklyPlans??={};state.weekReports??={};state.adjustments??=[];state.lastUndo??=null;
+  if(state.defaultWeek&&!state.weeklyPlans[state.defaultWeek.week])state.weeklyPlans[state.defaultWeek.week]=copy(state.defaultWeek);
   const s = state.settings;
   if (!s || !['math1', 'math2'].includes(s.mathExam) || !['english1', 'english2'].includes(s.englishExam) ||
       !['off', 'light', 'full'].includes(s.politicsMode) || !validDate(s.examDate) || (s.examDateMode !== undefined && !['auto','manual'].includes(s.examDateMode)) || !Number.isFinite(s.dailyHours) ||
@@ -58,6 +63,12 @@ export function validateState(state) {
   if (state.defaultWeek && (!validDate(state.defaultWeek.week) || !Array.isArray(state.defaultWeek.tasks) || state.defaultWeek.tasks.some(task => !validTask(task)))) throw new Error('默认计划损坏。');
   if (state.timer && (typeof state.timer.id!=='string'||!state.timer.id||!validDate(state.timer.date)||!Number.isFinite(state.timer.until)||state.timer.until<0||!subjectById[state.timer.subject] || ![1500, 3000, 5400].includes(state.timer.duration) || !Number.isInteger(state.timer.remaining) || state.timer.remaining < 0 || state.timer.remaining > state.timer.duration || typeof state.timer.running !== 'boolean')) throw new Error('番茄钟记录损坏。');
   if(new Set(state.sessions.map(s=>s.id)).size!==state.sessions.length)throw new Error('专注记录存在重复。');
+  if(typeof state.weakPoints!=='object'||Array.isArray(state.weakPoints)||Object.entries(state.weakPoints).some(([id,w])=>!topicById[id]||!w||typeof w.reason!=='string'||w.reason.length>500||!validDate(w.dueDate)||!['open','awaiting','resolved'].includes(w.status)||!Number.isInteger(w.cycle)||w.cycle<1))throw new Error('查漏记录损坏。');
+  if(typeof state.weeklyPlans!=='object'||Array.isArray(state.weeklyPlans)||Object.entries(state.weeklyPlans).some(([key,w])=>!validDate(key)||w.week!==key||!Array.isArray(w.tasks)||w.tasks.some(t=>!validTask(t))))throw new Error('周原版记录损坏。');
+  if(typeof state.weekReports!=='object'||Array.isArray(state.weekReports)||Object.entries(state.weekReports).some(([key,w])=>!validDate(key)||!w||!Array.isArray(w.planned)||w.planned.some(t=>!validTask(t))||!Number.isInteger(w.queued)||!Number.isInteger(w.paused)))throw new Error('周总结记录损坏。');
+  if(!Array.isArray(state.adjustments)||state.adjustments.some(a=>!a||typeof a.id!=='string'||!validDate(a.date)||typeof a.label!=='string'||!Array.isArray(a.changes)))throw new Error('计划调整记录损坏。');
+  if(state.lastUndo&&(!Array.isArray(state.lastUndo.tasks)||!Array.isArray(state.lastUndo.rules)||typeof state.lastUndo.label!=='string'))throw new Error('撤销记录损坏。');
+  if(state.sessions.some(s=>s.source!==undefined&&!['timer','manual'].includes(s.source)))throw new Error('专注来源损坏。');
   if (!validDate(state.lastProcessedDate) || !Number.isInteger(state.nextId) || state.nextId < 1) throw new Error('记录元数据损坏。');
   return copy(state);
 }
@@ -117,6 +128,12 @@ function politicsFits(state, task, date) {
   const others=state.tasks.filter(t=>t.id!==task.id && t.origin==='auto' && t.subject==='politics' && !t.queued && !t.suspended);
   if(state.settings.politicsMode==='light')return task.minutes<=20 && !others.some(t=>t.date===date) && others.filter(t=>monday(t.date)===monday(date)).length<3;
   const limit=Math.min(45,Math.floor(normalLimit(state)/20)*5);
+  if(limit<10){
+    if(limit===0||task.minutes>10||others.some(t=>t.date===date))return false;
+    const week=monday(date),first=state.weeklyPlans?.[week]?.start||state.defaultWeek?.week===week&&state.defaultWeek.start||[week,state.lastProcessedDate].sort().at(-1);
+    let budget=0;for(let day=first;day<=date;day=addDays(day,1))if(isStudyDay(state.settings,day))budget+=limit;
+    return others.filter(t=>t.date>=week&&t.date<=date).reduce((n,t)=>n+t.minutes,0)+task.minutes<=budget;
+  }
   return others.filter(t=>t.date===date).reduce((sum,t)=>sum+t.minutes,0)+task.minutes<=limit;
 }
 
@@ -124,6 +141,8 @@ function place(state, task, wanted) {
   task.queued = false; delete task.queueReason;
   if (task.topicId && pausedSet(state).has(task.topicId) && task.origin === 'auto') { task.suspended = true; return; }
   task.suspended = false;
+  const weak=state.weakPoints?.[task.topicId];
+  if(task.reviewKey&&weak&&(weak.status==='resolved'||task.reviewKey!==`${task.topicId}:${weak.cycle}`)){task.suspended=true;task.queueReason='本轮回顾已经结束';return;}
   if (task.subject === 'politics' && task.origin === 'auto' && state.settings.politicsMode === 'off') { task.queued=true;task.queueReason='政治当前未加入自动计划';return; }
   if (task.minutes > dailyLimit(state)) { task.queued = true; task.queueReason = '任务时长超过每日预算'; return; }
   let date = nextStudyDay(state.settings, wanted);
@@ -165,20 +184,22 @@ function politicsAllowance(state, week, date) {
 }
 
 export function generateWeek(state, now = dateKey(), regenerate = false, replaceDefault = false) {
-  let next = processMissed(state, now);
+  let next = processMissed(validateState(state), now);
   const week = monday(now), end = weekEnd(now), start = now > week ? now : week;
   if (regenerate) {
-    const movable = next.tasks.filter(t => !t.done && !t.suspended && t.date >= start && t.date <= end && !t.manualEdited && !t.manualMoved).sort((a,b)=>(order.get(a.topicId)??99999)-(order.get(b.topicId)??99999));
+    const movable = next.tasks.filter(t => !t.done && !t.suspended && t.date >= start && t.date <= end && !t.manualEdited && !t.manualMoved).sort((a,b)=>Number(b.kind==='review')-Number(a.kind==='review')||(order.get(a.topicId)??99999)-(order.get(b.topicId)??99999));
     for(const task of movable)task.queued=true;
     const cursor=new Map();
     for (const task of movable) { place(next,task,cursor.get(task.subject)||start);if(!task.queued)cursor.set(task.subject,task.date); }
   }
-  const knownTopics = new Set([...next.tasks, ...next.completions].map(item => item.topicId).filter(Boolean));
+  const knownTopics = new Set([...next.tasks, ...next.completions].filter(t=>t.kind!=='review').map(item => item.topicId).filter(Boolean));
   const paused=pausedSet(next);
   const queues = new Map(activeSubjects(next.settings).map(subject => [subject.id, subject.chapters.flatMap(chapter => chapter.topics).filter(topic => !knownTopics.has(topic.id)&&!paused.has(topic.id))]));
+  let politicsCarry=0;
   for (let date = start; date <= end && date <= next.settings.examDate; date = addDays(date, 1)) {
     if (!isStudyDay(next.settings, date)) continue;
-    const pTopic = queues.get('politics')?.[0], allowance = politicsAllowance(next, week, date);
+    const pTopic = queues.get('politics')?.[0];let allowance = politicsAllowance(next, week, date);
+    if(next.settings.politicsMode==='full'&&allowance<10){politicsCarry+=allowance;allowance=politicsCarry>=10?10:0;}
     const subjectLimit = normalLimit(next) - (pTopic && next.settings.politicsMode==='full' ? allowance : 0);
     const subjectList = activeSubjects(next.settings).filter(subject => subject.id !== 'politics');
     const allocated=subject=>next.tasks.filter(t=>t.subject===subject.id&&!t.suspended&&!t.queued&&t.date>=week&&t.date<=end).reduce((sum,t)=>sum+t.minutes,0);
@@ -195,12 +216,22 @@ export function generateWeek(state, now = dateKey(), regenerate = false, replace
     }
     if (pTopic && allowance >= 10 && dayUsed(next, date) + allowance <= (next.settings.politicsMode==='full'?normalLimit(next):dailyLimit(next)) && politicsFits(next,{id:'new',origin:'auto',subject:'politics',minutes:allowance},date)) {
       queues.get('politics').shift(); next.tasks.push(makeTask(next, pTopic, date, allowance)); knownTopics.add(pTopic.id);
+      politicsCarry=Math.max(0,politicsCarry-allowance);
     }
+  }
+  for(const subject of activeSubjects(next.settings)){
+    if(subject.id==='politics'&&next.settings.politicsMode==='off')continue;
+    const topic=queues.get(subject.id)?.[0];if(!topic)continue;
+    const minutes=subject.id==='politics'?(next.settings.politicsMode==='light'?20:Math.max(10,Math.min(45,Math.floor(normalLimit(next)/20)*5))):topic.minutes;
+    let reason=!next.settings.studyDays.length?'没有可学习日':start>next.settings.examDate?'目标初试日前没有可安排日期':minutes>dailyLimit(next)?'任务时长超过每日预算':'';
+    if(!reason||next.tasks.some(t=>!t.done&&t.origin==='auto'&&t.subject===subject.id&&t.queued&&!t.suspended))continue;
+    const task=makeTask(next,topic,start,minutes);task.queued=true;task.queueReason=reason;next.tasks.push(task);
   }
   next.tasks.sort(taskSort);
   if (!next.defaultWeek || next.defaultWeek.week !== week || replaceDefault) {
     const prior = new Map((state.defaultWeek?.week === week ? state.defaultWeek.tasks : []).map(t => [t.id, t]));
-    next.defaultWeek = { week, tasks: next.tasks.filter(t => !t.done && t.origin === 'auto' && t.date >= week && t.date <= end).map(t => ({ ...copy(prior.get(t.id) || t), date: t.date, done: false, suspended: false, queued: !!t.queued, queueReason: t.queueReason, manualEdited: false, manualMoved: false })) };
+    next.defaultWeek = { week,start:state.defaultWeek?.week===week?(state.defaultWeek.start||start):start, tasks: next.tasks.filter(t => !t.done && t.origin === 'auto' && t.date >= week && t.date <= end).map(t => ({ ...copy(prior.get(t.id) || t), date: t.date, done: false, suspended: false, queued: !!t.queued, queueReason: t.queueReason, manualEdited: false, manualMoved: false })) };
+    next.weeklyPlans[week]=copy(next.defaultWeek);
   }
   next.onboardingCompleted = true;
   return validateState(next);
@@ -210,8 +241,9 @@ export function replan(state, now = dateKey()) { return generateWeek(state, now,
 export function toggleTask(state, id, now = dateKey()) {
   const next = copy(state), task = next.tasks.find(item => item.id === id); if (!task) return next;
   task.done = !task.done; task.completedAt = task.done ? now : null;
-  if (task.done) next.completions.push({ id: uid('done'), taskId: task.id, topicId: task.topicId, subject: task.subject, title: task.title, date: now, minutes: task.minutes, examTrack: task.examTrack });
+  if (task.done) next.completions.push({ id: uid('done'), taskId: task.id, topicId: task.topicId, subject: task.subject, title: task.title, date: now, minutes: task.minutes, kind:task.kind, reviewKey:task.reviewKey, examTrack: task.examTrack });
   else next.completions = next.completions.filter(item => item.taskId !== task.id);
+  if(task.reviewKey&&next.weakPoints?.[task.topicId]){const w=next.weakPoints[task.topicId];if(task.reviewKey===`${task.topicId}:${w.cycle}`&&w.status!=='resolved')w.status=task.done?'awaiting':'open';}
   return validateState(next);
 }
 export function editTask(state, id, patch) {
@@ -224,7 +256,7 @@ export function editTask(state, id, patch) {
 export function addManualTask(state, fields) {
   const next = copy(state), subject = fields.subject, topic = fields.topicId ? topicById[fields.topicId] : null;
   if (!subjectById[subject] || (topic && topic.subject !== subject)) throw new Error('课程选择不正确。');
-  const task = { id: `task-${next.nextId++}`, topicId: topic?.id, subject, title: String(fields.title || topic?.title || '').trim(), date: fields.date, minutes: Math.round(Number(fields.minutes)), kind: fields.kind || 'learn', origin: 'manual', done: false, examTrack: trackFor(subject, next.settings), manualEdited: true, manualMoved: true };
+  const task = { id: `task-${next.nextId++}`, topicId: topic?.id, subject, title: String(fields.title || topic?.title || '').trim(), date: fields.date, minutes: Math.round(Number(fields.minutes)), kind: fields.kind || 'learn', origin: 'manual', done: false, examTrack: trackFor(subject, next.settings), manualEdited: true, manualMoved: true,createdWeek:monday(fields.date) };
   if (!validTask(task)) throw new Error('任务内容不完整。'); place(next, task, task.date); next.tasks.push(task); next.tasks.sort(taskSort); return validateState(next);
 }
 export function deleteManualTask(state, id) { const next = copy(state), task = next.tasks.find(t => t.id === id); if (!task || task.origin !== 'manual' || task.done) throw new Error('只能删除未完成的自加任务。'); next.tasks = next.tasks.filter(t => t.id !== id); return validateState(next); }
@@ -249,7 +281,7 @@ export function resumeTopic(state, topicId, now=dateKey()) {
   return validateState(next);
 }
 export function restoreDefault(state, now = dateKey()) {
-  const next = copy(state), week = monday(now), end = weekEnd(now); if (next.defaultWeek?.week !== week) throw new Error('本周没有可恢复的原版计划。');
+  const next = copy(state), week = monday(now), end = weekEnd(now);if(next.weeklyPlans?.[week])next.defaultWeek=copy(next.weeklyPlans[week]); if (next.defaultWeek?.week !== week) throw new Error('本周没有可恢复的原版计划。');
   const originalIds=new Set(next.defaultWeek.tasks.map(t=>t.id));
   const completed = next.tasks.filter(t => t.done || (!originalIds.has(t.id)&&t.createdWeek!==week&&(t.date < week || t.date > end)));
   const allowed=new Set(activeTopics(next.settings).map(t=>t.id));
@@ -310,5 +342,7 @@ export function resumeTimer(state, nowMs = Date.now()) { const next = copy(state
 export function finishTimer(state, nowMs = Date.now(), early = true) { const next = copy(state), t = next.timer; if (!t) return next; if (t.running) t.remaining = Math.max(0, Math.ceil((t.until - nowMs) / 1000)); const seconds = Math.max(0, t.duration - t.remaining); if (seconds) next.sessions.push({ id: t.id, date: t.date, subject: t.subject, examTrack: t.examTrack, seconds, early }); next.timer = null; return validateState(next); }
 export function cancelTimer(state) { const next = copy(state); next.timer = null; return validateState(next); }
 export const formatDuration = seconds => { const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60; return [h ? `${h}小时` : '', m ? `${m}分` : '', s ? `${s}秒` : ''].filter(Boolean).join('') || '0秒'; };
-export function weekStats(state, week = monday(dateKey())) { const list = state.tasks.filter(t => t.date >= week && t.date <= weekEnd(week)); return { total: list.length, done: list.filter(t => t.done).length, percent: list.length ? Math.round(list.filter(t => t.done).length / list.length * 100) : 0 }; }
+export function weekStats(state, week = monday(dateKey())) { const all=state.tasks.filter(t=>t.date>=week&&t.date<=weekEnd(week)),list=all.filter(t=>t.done||!t.queued&&!t.suspended); return { total:list.length,done:list.filter(t=>t.done).length,percent:list.length?Math.round(list.filter(t=>t.done).length/list.length*100):0,queued:all.filter(t=>!t.done&&t.queued&&!t.suspended).length,paused:all.filter(t=>!t.done&&t.suspended).length }; }
+export function placeTask(state, task, wanted) { place(state,task,wanted);return task; }
+export function enforceBudget(state, now=dateKey()) {return validateState(reconcileBudget(copy(state),now));}
 export function progressPercent(state) { const list = activeTopics(state.settings); return list.length ? Math.round(list.reduce((sum, t) => sum + (state.progress[t.id]?.level || 0) / 3, 0) / list.length * 1000) / 10 : 0; }

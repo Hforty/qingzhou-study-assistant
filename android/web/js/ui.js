@@ -19,9 +19,10 @@ export const icon = (name,size=22) => {
 };
 export const boat = '<svg viewBox="0 0 120 100" aria-hidden="true"><path d="M26 62h70c-6 18-20 24-35 24S34 78 26 62Z" fill="#356e50"/><path d="M57 12v43H29Z" fill="#8bb18e"/><path d="M63 6v49h29Z" fill="#4f885f"/><path d="M20 92q20-8 40 0t40 0" fill="none" stroke="#abc4a8" stroke-width="3" stroke-linecap="round"/></svg>';
 let toastTimer;
-export function toast(text,error=false) {
+export function toast(text,error=false,undo=null) {
   const box=document.querySelector('#toast');box.textContent=text;box.className=error?'visible error-toast':'visible';
-  clearTimeout(toastTimer);toastTimer=setTimeout(()=>box.className='',error?5000:2300);
+  if(undo){const button=document.createElement('button');button.textContent='撤销';button.className='toast-undo';button.onclick=()=>{box.className='';undo();};box.append(button);box.classList.add('with-action');}
+  clearTimeout(toastTimer);toastTimer=setTimeout(()=>box.className='',undo?8000:error?5000:2300);
 }
 export class Dialogs {
   constructor(){this.stack=[];}
@@ -35,7 +36,7 @@ export class Dialogs {
     dialog.querySelector('.close').onclick=()=>this.requestClose(handle);
     dialog.addEventListener('cancel',event=>{event.preventDefault();this.requestClose(handle);});
     dialog.addEventListener('click',event=>{if(event.target===dialog){const rect=dialog.getBoundingClientRect();if(event.clientY<rect.top||event.clientY>rect.bottom||event.clientX<rect.left||event.clientX>rect.right)this.requestClose(handle);}});
-    dialog.showModal();return handle;
+    dialog.showModal();if(!matchMedia('(prefers-reduced-motion: reduce)').matches&&document.documentElement.dataset.motion!=='off'&&dialog.animate)dialog.animate([{opacity:0,transform:'translateY(24px)'},{opacity:1,transform:'translateY(0)'}],{duration:240,easing:'cubic-bezier(.2,0,0,1)'});return handle;
   }
   requestClose(handle=this.stack.at(-1)) {if(handle){if(handle.onClose)handle.onClose(handle);else this.close(handle);}}
   close(handle=this.stack.at(-1)) {
@@ -58,6 +59,7 @@ export class Dialogs {
 }
 export function bindTaskGestures(container,{toggle,edit}) {
   for(const row of container.querySelectorAll('.task-row[data-id]')) {
+    if(boundRows.has(row))continue;boundRows.add(row);
     let start=null,axis='',offset=0,longTimer,edited=false;
     const reset=()=>{clearTimeout(longTimer);start=null;axis='';offset=0;row.style.transform='';row.closest('.task-swipe').classList.remove('swiping');};
     row.addEventListener('pointerdown',event=>{
@@ -77,3 +79,4 @@ export function bindTaskGestures(container,{toggle,edit}) {
     row.addEventListener('contextmenu',event=>{event.preventDefault();if(edit&&!edited&&!row.classList.contains('completed')){reset();edit(row.dataset.id);}});
   }
 }
+const boundRows=new WeakSet();

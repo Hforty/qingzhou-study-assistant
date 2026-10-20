@@ -52,6 +52,7 @@ public class MainActivity extends Activity {
             return insets;
         });
         root.requestApplyInsets();
+        applyAppearance();
         WebSettings settings = web.getSettings();
         settings.setJavaScriptEnabled(true);
         settings.setDomStorageEnabled(false);
@@ -59,6 +60,7 @@ public class MainActivity extends Activity {
         settings.setAllowContentAccess(false);
         settings.setJavaScriptCanOpenWindowsAutomatically(false);
         settings.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        settings.setCacheMode(WebSettings.LOAD_NO_CACHE);
         WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
             .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this)).build();
         web.setWebViewClient(new WebViewClientCompat() {
@@ -73,19 +75,23 @@ public class MainActivity extends Activity {
                 if ("https".equals(uri.getScheme()) && "appassets.androidplatform.net".equals(uri.getHost())) return false;
                 return true;
             }
-            @Override public void onPageFinished(WebView view,String url) { notifyWeb("resume", null);if(getIntent().getBooleanExtra("focus",false))notifyWeb("focus",null); }
+            @Override public void onPageFinished(WebView view,String url) { notifyWeb("resume", null);dispatchIntent(); }
         });
         web.addJavascriptInterface(new Bridge(), "QingzhouAndroid");
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG);
         web.loadUrl("https://appassets.androidplatform.net/assets/index.html");
         if(Build.VERSION.SDK_INT>=33)getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,this::handleBack);
     }
-    @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);if(intent.getBooleanExtra("focus",false))notifyWeb("focus",null);}
+    @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);dispatchIntent();}
+    private void dispatchIntent(){if(getIntent().getBooleanExtra("widgetStart",false)){getIntent().removeExtra("widgetStart");notifyWeb("widgetStart",null);}else if(getIntent().getBooleanExtra("focus",false)){getIntent().removeExtra("focus");notifyWeb("focus",null);}}
     @Override protected void onResume() {
         super.onResume();
-        if(web!=null){web.onResume();notifyWeb("resume",null);}
+        applyAppearance();
+        if(web!=null){web.onResume();notifyWeb("resume",null);notifyWeb("appearance",null);syncService();}
     }
     @Override protected void onPause() { if(web!=null)web.onPause();super.onPause(); }
+    @Override public void onConfigurationChanged(android.content.res.Configuration config){super.onConfigurationChanged(config);applyAppearance();notifyWeb("appearance",null);}
+    private void applyAppearance(){if(web==null)return;boolean dark=(getResources().getConfiguration().uiMode&android.content.res.Configuration.UI_MODE_NIGHT_MASK)==android.content.res.Configuration.UI_MODE_NIGHT_YES;int color=dark?Color.rgb(17,28,22):Color.rgb(244,247,242);getWindow().setStatusBarColor(color);getWindow().setNavigationBarColor(color);web.setBackgroundColor(color);if(web.getParent() instanceof View)((View)web.getParent()).setBackgroundColor(color);web.getSettings().setTextZoom(Math.round(getResources().getConfiguration().fontScale*100));if(Build.VERSION.SDK_INT>=30&&getWindow().getInsetsController()!=null){int mask=android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS|android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;getWindow().getInsetsController().setSystemBarsAppearance(dark?0:mask,mask);}else{getWindow().getDecorView().setSystemUiVisibility(dark?0:View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);}}
     @Override public void onBackPressed() {
         handleBack();
     }
@@ -116,7 +122,7 @@ public class MainActivity extends Activity {
             } catch(Exception error) { notifyWeb("serviceError","后台提醒暂不可用，返回应用后将按时间校准。"); }
         });
     }
-    final class Bridge {
+    public final class Bridge {
         @JavascriptInterface public String readState() {
             // A Java String null becomes JS undefined in WebView. Always return a non-null envelope.
             try {
@@ -127,9 +133,11 @@ public class MainActivity extends Activity {
                 return "{\"ok\":false,\"message\":\"读取本机记录失败，请关闭应用后重试。\"}";
             }
         }
-        @JavascriptInterface public String saveState(String value,String expected) {
+        @JavascriptInterface public String saveState(String value,String expected,String reason) {
             try {
-                DataStore.write(MainActivity.this,value,expected);
+                if(FocusController.pending(MainActivity.this)!=null)throw new IllegalStateException("请先重试保存上一轮专注结果。");
+                if(!java.util.Arrays.asList("daily","import","restore","default").contains(reason))reason="daily";
+                DataStore.write(MainActivity.this,value,expected,reason);
                 syncService();
                 return "{\"ok\":true}";
             } catch(Exception error) {
@@ -137,6 +145,15 @@ public class MainActivity extends Activity {
                 catch(Exception ignored){return "{\"ok\":false}";}
             }
         }
+        @JavascriptInterface public String focusCommand(String command){try{FocusController.command(MainActivity.this,new JSONObject(command));syncService();return "{\"ok\":true}";}catch(Exception e){return failure(e);}}
+        @JavascriptInterface public String pendingFocus(){try{JSONObject pending=FocusController.pending(MainActivity.this);return new JSONObject().put("ok",true).put("pending",pending==null?JSONObject.NULL:pending).toString();}catch(Exception e){return failure(e);}}
+        @JavascriptInterface public long stateRevision(){return DataStore.revision(MainActivity.this);}
+        @JavascriptInterface public String recoveryList(){try{return new JSONObject().put("ok",true).put("items",RecoveryStore.list(MainActivity.this)).toString();}catch(Exception e){return failure(e);}}
+        @JavascriptInterface public String recoveryRead(String id){try{return new JSONObject().put("ok",true).put("raw",RecoveryStore.read(MainActivity.this,id)).toString();}catch(Exception e){return failure(e);}}
+        @JavascriptInterface public boolean reducedMotion(){return android.provider.Settings.Global.getFloat(getContentResolver(),android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,1f)==0f;}
+        @JavascriptInterface public boolean darkMode(){return (getResources().getConfiguration().uiMode&android.content.res.Configuration.UI_MODE_NIGHT_MASK)==android.content.res.Configuration.UI_MODE_NIGHT_YES;}
+        @JavascriptInterface public boolean isDebugBuild(){return BuildConfig.DEBUG;}
+        private String failure(Exception e){try{return new JSONObject().put("ok",false).put("message",e.getMessage()==null?"操作失败，请重试。":e.getMessage()).toString();}catch(Exception ignored){return "{\"ok\":false,\"message\":\"操作失败\"}";}}
         @JavascriptInterface public void exportBackup(String value) {
             if(value==null || value.getBytes(StandardCharsets.UTF_8).length>DataStore.LIMIT) {
                 notifyWeb("error","导出内容超过 30 MiB。");return;

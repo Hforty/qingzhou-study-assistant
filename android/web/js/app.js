@@ -1,17 +1,21 @@
 import * as Core from '../lib/qz/engine.js';
+import * as Features from '../lib/qz/features.js';
+import * as Views from './views.js';
+import {patchHTML,animateIn,animateResize} from './dom.js';
 import { activeSubjects, activeTopics, activeGroups } from '../lib/qz/curriculum.js';
 import { Store, createBackend, makeBackup, parseBackup, bytes, MAX_BYTES } from './store.js';
 import { escapeHTML as e, icon, boat, toast, Dialogs, bindTaskGestures } from './ui.js';
 
 const root=document.querySelector('#app'),dialogs=new Dialogs();
-const titles={home:'今天，也向前一步',plan:'把这一周安排好',focus:'专心眼前这一件事',progress:'看见每一步积累',settings:'找到自己的节奏',records:'每一份努力都有迹可循'};
-const labels={home:'首页',plan:'学习计划',focus:'专注空间',progress:'学习进度',settings:'设置',records:'学习记录'};
+const titles={home:'今天，也向前一步',plan:'把这一周安排好',focus:'专心眼前这一件事',progress:'看见每一步积累',settings:'找到自己的节奏',records:'每一份努力都有迹可循',summary:'给下周，多一点从容'};
+const labels={home:'首页',plan:'学习计划',focus:'专注空间',progress:'学习进度',settings:'设置',records:'学习记录',summary:'本周小结'};
 const navs=['home','plan','focus','progress','settings'];
 const today=()=>Core.dateKey();
 const duration=seconds=>Core.formatDuration(Math.max(0,seconds));
-const version=()=>globalThis.QingzhouAndroid?.version?.()||'1.0.1';
+const version=()=>globalThis.QingzhouAndroid?.version?.()||'1.1.0';
 let store,state,error='',page='home',week=Core.monday(today()),settingsDirty=false;
-let query='',expanded=new Set(),beforeSearch=null,focusSubject='math',focusDuration=1500;
+let query='',expanded=new Set(),beforeSearch=null,weakOnly=false,focusSubject='math',focusDuration=1500;
+let renderedPage=null;
 let recordsFilter={type:'all',subject:'all',from:'',to:'',page:1},lastTimerId='',interval;
 try{store=new Store(createBackend());state=store.state;}catch(failure){error=failure.message;}
 function banner(message){error=message;const existing=document.querySelector('#page-error');if(existing){existing.textContent=message;existing.hidden=!message;}toast(message,true);}
@@ -25,44 +29,11 @@ function empty(text,detail=''){return '<div class="empty">'+icon('book',30)+'<p>
 function action(text,key,css='secondary'){return '<button class="button '+css+'" data-action="'+key+'">'+text+'</button>';}
 function taskHTML(task,readonly=false){
   const label=name(task.subject,task.examTrack),done=task.done;
-  if(readonly)return '<div class="original-task"><strong>'+e(task.title)+'</strong><small>'+e(task.date)+' · '+e(label)+' · '+task.minutes+' 分钟</small></div>';
-  return '<div class="task-swipe"><span class="swipe-label">'+(done?'撤销完成':'完成')+'</span><div class="task-row '+(done?'completed':'')+'" data-id="'+e(task.id)+'" tabindex="0"><div class="task-copy"><strong>'+e(task.title)+'</strong><small>'+e(label)+'<span> · </span>'+task.minutes+' 分钟</small></div>'+(done?'<span class="done-label">'+icon('check',16)+'已完成</span>':task.suspended?'<span class="pill">已暂停</span>':task.queued?'<span class="pill">待安排</span>':'<button class="start-button" data-start="'+e(task.id)+'" aria-label="开始学习：'+e(task.title)+'">开始</button>')+'</div></div>';
+  if(readonly)return '<div class="original-task"><strong>'+e(task.title)+'</strong><small>'+e(task.date)+' · '+e(label)+' · '+task.minutes+' 分钟'+(task.kind==='review'?' · 查漏回顾':'')+'</small></div>';
+  return '<div class="task-swipe"><span class="swipe-label">'+(done?'撤销完成':'完成')+'</span><div class="task-row '+(done?'completed':'')+'" data-id="'+e(task.id)+'" tabindex="0"><div class="task-copy"><strong>'+e(task.title)+'</strong>'+(page==='plan'&&!done?'<button class="task-edit" data-edit="'+e(task.id)+'" aria-label="编辑任务：'+e(task.title)+'">编辑</button>':'')+'<small>'+e(label)+'<span> · </span>'+task.minutes+' 分钟'+(task.kind==='review'?' · 查漏回顾':'')+'</small></div>'+(done?'<span class="done-label">'+icon('check',16)+'已完成</span>':task.suspended?'<span class="pill">已暂停</span>':task.queued?'<span class="pill">待安排</span>':'<button class="start-button" data-start="'+e(task.id)+'" aria-label="开始学习：'+e(task.title)+'">开始</button>')+'</div></div>';
 }
-function home(){
-  const now=today(),tasks=state.tasks.filter(task=>task.date===now&&!task.queued&&!task.suspended);
-  const stats=Core.weekStats(state),seconds=state.sessions.filter(s=>s.date===now).reduce((sum,s)=>sum+s.seconds,0);
-  const days=Core.dayDiff(now,state.settings.examDate),hasPlan=state.defaultWeek?.week===Core.monday(now);
-  const quotes=['稳稳地走，每一步都算数。','不必一口气抵达，把今天学扎实。','把注意力留给眼前这一页。','进步有时很慢，但从未白费。','允许调整节奏，也记得继续出发。','把大目标，过成踏实的小日子。','今天认真走过的路，会在以后看见。'];
-  return '<section class="countdown"><div><span>'+e(days>0?'距离目标初试日':days===0?'今天是目标初试日':'目标初试日期已过')+'</span><small>'+e(state.settings.name)+'，'+e(days<0?'记得在设置中调整目标日期。':'按自己的节奏，继续向前。')+'</small></div><div class="count-number">'+Math.max(0,days)+'<small>天</small></div></section>'+
-  (state.timer?'<button class="resume-card" data-nav="focus">'+icon('focus')+'<span>'+e(name(state.timer.subject,state.timer.examTrack))+' · '+(state.timer.running?'专注进行中':'专注已暂停')+'</span>'+icon('arrow',18)+'</button>':'')+
-  '<section class="card"><div class="section-head"><h2>今日计划</h2><button class="text-button" data-nav="plan">查看本周 '+icon('arrow',15)+'</button></div>'+
-  (tasks.length?'<p class="gesture-hint">右滑完成，再次右滑可撤销</p>'+tasks.map(t=>taskHTML(t)).join(''):empty(hasPlan?'今天没有安排，安心休息吧':'先为这一周安排一点进步',hasPlan?'也可以去计划页添加自主学习内容':'每天一点，留出弹性，慢慢积累'))+
-  (!hasPlan?action('生成本周计划','generate-from-home','primary'):'')+'</section>'+
-  '<section class="metrics"><button data-nav="plan"><strong>'+stats.percent+'<em>%</em></strong><span>本周完成</span></button><button data-nav="progress"><strong>'+Core.progressPercent(state)+'<em>%</em></strong><span>知识掌握</span></button><button data-nav="records"><strong>'+Math.floor(seconds/60)+'<em>分</em></strong><span>今日专注</span></button></section>'+
-  '<section class="course-entry card"><div class="section-head"><h2>学习内容</h2><button class="text-button" data-nav="progress">查看全部 '+icon('arrow',15)+'</button></div><div class="course-grid">'+activeGroups(state.settings).map(group=>'<button data-group="'+group.id+'"><span class="course-symbol">'+e(group.symbol)+'</span><span>'+e(group.name)+'</span>'+icon('arrow',14)+'</button>').join('')+'</div></section>'+
-  '<p class="quote">'+quotes[new Date().getDay()]+'</p>';
-}
-function plan(){
-  const end=Core.weekEnd(week),current=week===Core.monday(today()),hasPlan=state.defaultWeek?.week===week;
-  const list=state.tasks.filter(task=>task.date>=week&&task.date<=end&&!task.suspended&&!task.queued),fixed=state.settings.dailyHours*60;
-  let html='<div class="week-nav"><button class="icon-button" data-action="previous-week" aria-label="上一周">'+icon('back',18)+'</button><button class="week-label" data-action="this-week">'+week.slice(5).replace('-',' / ')+' — '+end.slice(5).replace('-',' / ')+'</button><button class="icon-button" data-action="next-week" aria-label="下一周">'+icon('arrow',18)+'</button></div>';
-  if(current)html+='<div class="actions">'+action(hasPlan?'重新安排':'生成本周计划','generate','primary')+action(icon('add',18)+' 添加内容','add')+'</div><p class="gesture-hint page-hint">右滑完成 · 长按编辑 · 按周一至周日安排</p>';
-  if(hasPlan)html+='<button class="card original-entry" data-action="original"><span><strong>查看原版</strong><small>本周默认安排</small></span>'+icon('arrow',18)+'</button>';
-  const weekdays=['周一','周二','周三','周四','周五','周六','周日'];
-  for(let index=0;index<7;index++){
-    const date=Core.addDays(week,index),tasks=list.filter(t=>t.date===date),rest=!Core.isStudyDay(state.settings,date),isToday=date===today();
-    const used=tasks.reduce((sum,t)=>sum+t.minutes,0);
-    html+='<section class="card day-card '+(!tasks.length?'empty-day':'')+' '+(isToday?'today':'')+'" id="day-'+date+'"><div class="section-head"><div class="day-heading"><h2>'+(isToday?'今天':weekdays[index])+'</h2><span>'+date.slice(5).replace('-',' / ')+'</span></div><span class="pill '+(rest?'neutral':'')+'">'+(rest?'休息日':!tasks.length?'暂无安排':used+' / '+fixed+' 分钟')+'</span></div>';
-    if(tasks.length)html+=tasks.map(t=>taskHTML(t)).join('')+'<p class="day-budget">'+(used>fixed?'固定安排已超过当日预算，可编辑任务调整。':'剩余 '+Math.max(0,fixed-used)+' 分钟，可作为机动时间')+'</p>';
-    html+='</section>';
-  }
-  if(current){
-    const queued=state.tasks.filter(t=>t.queued&&!t.done&&!t.suspended);
-    if(queued.length)html+='<section class="card"><h2>待安排 <span class="count">'+queued.length+'</span></h2>'+queued.map(t=>'<button class="queued-task" data-edit="'+e(t.id)+'"><strong>'+e(t.title)+'</strong><small>'+e(t.queueReason||'暂时没有可容纳的日期')+'</small><small>'+e(name(t.subject,t.examTrack))+' · '+t.minutes+' 分钟</small></button>').join('')+'</section>';
-    if(state.pausedTopics.length)html+='<section class="card"><h2>永久暂停</h2>'+state.pausedTopics.map(item=>'<div class="paused-row"><span><strong>'+e(Core.topicById[item.topicId]?.title||item.topicId)+'</strong><small>从 '+e(item.week)+' 这一周起</small></span><button class="small-button" data-resume="'+e(item.topicId)+'">恢复</button></div>').join('')+'</section>';
-  }
-  return html;
-}
+function home(){return Views.home({state,today:today(),name,taskHTML,pending:store.pending});}
+function plan(){return Views.plan({state,today:today(),week,taskHTML});}
 function focus(){
   const timer=state.timer,selected=timer?.subject||focusSubject,frozen=store.pending?.candidate.sessions.find(s=>s.id===timer?.id),remaining=store.pending?Math.max(0,(timer?.duration||focusDuration)-(frozen?.seconds||0)):timer?Core.syncTimer(state).timer?.remaining??0:focusDuration;
   const seconds=state.sessions.filter(s=>s.date===today()).reduce((sum,s)=>sum+s.seconds,0);
@@ -74,26 +45,14 @@ function focus(){
   '<button class="card record-entry" data-records="focus"><span class="entry-icon">'+icon('history',24)+'</span><span><strong>专注记录</strong><small>按课程查看实际投入的时间</small></span>'+icon('arrow',18)+'</button>';
 }
 function clock(seconds){return String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0');}
-function progress(){
-  const q=query.trim().toLowerCase(),weekly=Core.weekStats(state);
-  return '<div class="progress-summary"><div><strong>'+weekly.percent+'<em>%</em></strong><span>本周任务完成</span></div><div><strong>'+Core.progressPercent(state)+'<em>%</em></strong><span>知识掌握</span></div></div>'+
-  '<label class="search-field">'+icon('search',19)+'<input id="progress-search" placeholder="搜索知识点或章节" value="'+e(query)+'" autocomplete="off"></label>'+
-  subjects().map(subject=>{
-    const items=subject.chapters.flatMap(chapter=>chapter.topics.map(topic=>({...topic,chapterName:chapter.title})));
-    const matches=items.filter(topic=>!q||(topic.title+' '+topic.chapterName+' '+subject.name).toLowerCase().includes(q));if(!matches.length)return '';
-    const percent=Math.round(items.reduce((sum,t)=>sum+(state.progress[t.id]?.level||0)/3,0)/items.length*100),open=q||expanded.has(subject.id);
-    return '<section class="card subject-card" id="subject-'+subject.id+'"><button class="subject-heading" data-expand="'+subject.id+'" aria-expanded="'+!!open+'"><span><strong>'+e(subject.name)+'</strong><small>'+items.length+' 个知识点</small></span><span class="subject-number">'+percent+'% <span class="chevron '+(open?'up':'')+'">⌄</span></span></button><div class="subject-progress"><span style="width:'+percent+'%"></span></div>'+
-    (open?'<div class="topic-list">'+matches.map(topic=>{
-      const level=state.progress[topic.id]?.level||0;
-      return '<div class="topic-row"><div><strong>'+e(topic.title)+'</strong><small>'+e(topic.chapterName)+'</small></div><button data-level="'+topic.id+'" class="level level-'+level+'">'+Core.LEVELS[level]+'</button></div>';
-    }).join('')+'</div>':'')+'</section>';
-  }).join('')+action('查看学习记录','records');
-}
+function progress(){return Views.progress({state,query,expanded,weakOnly});}
+function summary(){return Views.summary({state,week,name});}
 function settings(){
   const s=state.settings,days=[1,2,3,4,5,6,0];
   return '<form id="settings-form"><section class="card"><h2>基本设置</h2><label class="field-label" for="name">称呼</label><input id="name" name="name" maxlength="40" value="'+e(s.name)+'"><div class="label-row"><label class="field-label" for="exam-date">目标初试日</label><span id="exam-mode" class="pill">'+(s.examDateMode==='auto'?'自动':'手动')+'</span></div><input type="date" name="examDate" id="exam-date" value="'+s.examDate+'"><input type="hidden" name="examDateMode" value="'+s.examDateMode+'"><button type="button" class="text-button date-reset" data-action="auto-date">恢复自动日期</button><p class="help">自动日期最早为 2027-12-20，过期后切换至下一年。它是规划日期，请以官方考试公告为准。</p><label class="field-label" for="daily-hours">每日学习时间</label><div class="hours-input"><input type="number" id="daily-hours" name="dailyHours" min="0.5" max="16" step="0.5" value="'+s.dailyHours+'"><span>小时 / 天</span></div></section>'+
   '<section class="card"><h2>考试科目</h2>'+examFields(s)+'</section><section class="card"><h2>每周学习日</h2><div class="week-options">'+days.map(day=>'<label><input type="checkbox" name="studyDays" value="'+day+'" '+(s.studyDays.includes(day)?'checked':'')+'><span>周'+['日','一','二','三','四','五','六'][day]+'</span></label>').join('')+'</div><p class="help">关闭的日期不安排未完成任务；修改后会重建本周默认计划。</p></section><button type="submit" class="button primary wide save-settings">保存设置</button></form>'+
   '<section class="card"><h2>记录与备份</h2><button class="setting-row" data-action="export"><span>'+icon('history',20)+'导出完整备份</span>'+icon('arrow',16)+'</button><button class="setting-row" data-action="import"><span>'+icon('book',20)+'导入安卓版备份</span>'+icon('arrow',16)+'</button><p class="help">包含计划、掌握程度和学习记录，导入前会再次确认。</p></section>'+
+  '<section class="card"><h2>自动恢复</h2><button class="setting-row" data-action="recovery-list"><span>'+icon('history',20)+'查看本机恢复点</span>'+icon('arrow',16)+'</button><p class="help">升级和重要替换操作前自动保留，最多5份；完整备份仍可另存。</p></section>'+
   '<section class="card"><h2>联系我们</h2><p class="developer">轻舟项目开发者</p><p class="email">2024304827@aust.edu.cn</p><div class="actions">'+action('复制邮箱','copy-email')+action('发送邮件','contact')+'</div></section>'+
   '<button class="version-row" data-action="releases">轻舟 Android '+e(version())+' · 查看发布版本 '+icon('arrow',14)+'</button><input type="file" id="backup-file" accept=".json,application/json" hidden>';
 }
@@ -102,27 +61,22 @@ function examFields(s){
   '<fieldset><legend>英语</legend><div class="choices">'+[['english2','英语二'],['english1','英语一']].map(([value,label])=>'<label><input type="radio" name="englishExam" value="'+value+'" '+(s.englishExam===value?'checked':'')+'><span>'+label+'</span></label>').join('')+'</div></fieldset>'+
   '<fieldset><legend>政治计划</legend><div class="choices politics-choices">'+[['off','不安排'],['light','轻度'],['full','全量']].map(([value,label])=>'<label><input type="radio" name="politicsMode" value="'+value+'" '+(s.politicsMode===value?'checked':'')+'><span>'+label+'</span></label>').join('')+'</div><p class="help">早期可轻度熟悉，考前约 5–6 个月考虑系统复习，最后约 3 个月加强回顾。这是可调整的规划建议。</p></fieldset>';
 }
-function records(){
-  const f=recordsFilter,rows=[];
-  if(f.type!=='focus')for(const item of state.completions)rows.push({...item,key:'task-'+item.id,type:'task',detail:'完成任务 · '+item.minutes+' 分钟'});
-  if(f.type!=='task')for(const item of state.sessions)rows.push({...item,key:'focus-'+item.id,type:'focus',title:'专注学习',detail:'实际专注 '+duration(item.seconds)});
-  const list=rows.filter(r=>(f.subject==='all'||r.subject===f.subject)&&(!f.from||r.date>=f.from)&&(!f.to||r.date<=f.to)).sort((a,b)=>b.date.localeCompare(a.date)||b.key.localeCompare(a.key));
-  const historySubjects=[{id:'all',name:'全部课程'},...subjects()];
-  for(const row of rows)if(!historySubjects.some(s=>s.id===row.subject))historySubjects.push({id:row.subject,name:Core.subjectById[row.subject]?.name||'历史课程'});
-  return '<section class="card filter-card"><div class="segmented">'+[['all','全部'],['task','任务'],['focus','专注']].map(([value,label])=>'<button data-record-type="'+value+'" class="'+(f.type===value?'active':'')+'">'+label+'</button>').join('')+'</div><label class="field-label" for="record-subject">课程</label><select id="record-subject">'+selectOptions(historySubjects,f.subject)+'</select><div class="date-range"><label><span>开始日期</span><input type="date" id="record-from" value="'+f.from+'"></label><label><span>结束日期</span><input type="date" id="record-to" value="'+f.to+'"></label></div><button class="text-button" data-action="clear-dates">清除日期筛选</button></section>'+
-  '<section class="card"><h2>学习记录 <span class="count">'+list.length+'</span></h2>'+(list.length?list.slice(0,f.page*20).map(row=>'<article class="history-row"><div><strong>'+e(row.title)+'</strong><span class="pill">'+(row.type==='task'?'已完成':'专注')+'</span></div><small>'+e(row.date)+' · '+e(name(row.subject,row.examTrack))+'</small><p>'+e(row.detail)+'</p></article>').join(''):empty('这里会留下认真学习的痕迹','换个筛选条件，或从今天的一次专注开始'))+(list.length>f.page*20?action('加载更多','more-records'):'')+'</section>';
-}
+function records(){return Views.records({state,filter:recordsFilter,name});}
 function onboarding(){
   return '<main class="welcome"><div class="welcome-mark">'+boat+'</div><span class="eyebrow">QINGZHOU · 轻舟</span><h1>让备考，轻一点</h1><p class="welcome-copy">选好方向，把大目标<br>拆成每天踏实的小进步。</p><form id="onboarding-form"><section class="card">'+examFields(state.settings)+'</section><div class="welcome-defaults"><span>'+icon('focus',17)+' 每天 4 小时</span><span>'+icon('plan',17)+' 每周七天</span><p>目标初试规划日：'+e(state.settings.examDate)+'<br>之后都可以在设置中修改</p></div><button class="button primary wide" type="submit">生成本周计划，开始使用 '+icon('arrow',18)+'</button></form><p class="welcome-foot">不必完美开始，先出发就很好。</p></main>';
 }
 function recovery(){
-  root.innerHTML='<main class="recovery"><div class="welcome-mark">'+boat+'</div><h1>先保护好你的记录</h1><p>现有记录暂时无法读取，应用没有用空白记录覆盖它。</p><div class="error-panel">'+e(error)+'</div><button class="button primary wide" data-action="export-raw">导出原始记录</button><button class="button secondary wide" data-action="import">导入有效备份</button><input type="file" id="backup-file" accept=".json,application/json" hidden></main>';bindBackupInput();
+  root.innerHTML='<main class="recovery"><div class="welcome-mark">'+boat+'</div><h1>先保护好你的记录</h1><p>现有记录暂时无法读取，应用没有用空白记录覆盖它。</p><div class="error-panel">'+e(error)+'</div><button class="button primary wide" data-action="recovery-list">查看本机恢复点</button><button class="button secondary wide" data-action="retry-load">重新读取</button><button class="button secondary wide" data-action="export-raw">导出原始记录</button><button class="button secondary wide" data-action="import">导入有效备份</button><input type="file" id="backup-file" accept=".json,application/json" hidden></main>';bindBackupInput();
 }
 function render(){
+  try{document.documentElement.dataset.motion=globalThis.QingzhouAndroid?.reducedMotion?.()?'off':'on';}catch{}
+  document.documentElement.dataset.theme=(globalThis.QingzhouAndroid?.darkMode?.()??matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';
+  const changedPage=renderedPage!==page;renderedPage=page;
   if(!state){recovery();return;}
   if(!state.onboardingCompleted){root.innerHTML=onboarding();root.querySelector('#onboarding-form').onsubmit=startOnboarding;return;}
   const savedScroll=window.scrollY;
-  root.innerHTML='<div class="app-shell">'+header()+'<main class="page" id="main"><div class="error-panel" id="page-error" role="alert" '+(!error?'hidden':'')+'>'+e(error)+'</div>'+({home,plan,focus,progress,settings,records}[page]||home)()+'</main>'+navigation()+'</div>';
+  patchHTML(root,'<div class="app-shell" data-view="'+page+'">'+header()+'<main class="page" id="main"><div class="error-panel" id="page-error" role="alert" '+(!error?'hidden':'')+'>'+e(error)+'</div>'+({home,plan,focus,progress,settings,records,summary}[page]||home)()+'</main>'+navigation()+'</div>');
+  if(changedPage)animateIn(document.querySelector('main'));
   if(page==='home'||page==='plan')bindTaskGestures(root,{toggle:toggleTask,edit:page==='plan'?taskMenu:undefined});
   if(page==='progress'){
     const input=document.querySelector('#progress-search');
@@ -150,8 +104,8 @@ async function navigate(next){
   }
   page=next;clearError();render();requestAnimationFrame(()=>window.scrollTo(0,0));
 }
-function commit(command,message='已保存',{rerender=true}={}){
-  try{store.update(command);state=store.state;clearError();if(rerender&&!dialogs.active)render();if(message)toast(message);return true;}
+function commit(command,message='已保存',{rerender=true,reason='daily'}={}){
+  try{store.update(command,{reason});state=store.state;clearError();if(rerender&&!dialogs.active)render();if(message)toast(message);return true;}
   catch(failure){if(dialogs.active)dialogs.error(dialogs.stack.at(-1),failure.message);else banner(failure.message);return false;}
 }
 async function startOnboarding(event){
@@ -163,29 +117,29 @@ async function startOnboarding(event){
 function toggleTask(id){
   let completed=false;
   const ok=commit(base=>{const task=base.tasks.find(item=>item.id===id);if(!task)throw new Error('任务已经变化，请刷新后重试。');completed=!task.done;return Core.toggleTask(base,id);},'');
-  if(ok){globalThis.QingzhouAndroid?.feedback?.();toast(completed?'已完成，继续保持':'已撤销完成');}
+  if(ok){globalThis.QingzhouAndroid?.feedback?.();animateIn(root.querySelector('.task-row[data-id="'+CSS.escape(id)+'"] .done-label'));toast(completed?'已完成，继续保持':'已撤销完成');}
 }
 function startTask(id){
   const task=state.tasks.find(t=>t.id===id);
   if(!task||task.done||task.queued||task.suspended)return;
   focusSubject=state.timer?.subject||task.subject;
-  if(!state.timer&&!commit(base=>Core.startTimer(base,task.subject,focusDuration),'',{rerender:false}))return;
+  if(!state.timer&&!focusCommand('start',{subject:task.subject,taskId:task.id,duration:focusDuration}))return;
     page='focus';render();requestAnimationFrame(()=>window.scrollTo(0,0));
 }
 async function generate(){
-  if(!await dialogs.confirm({title:state.defaultWeek?.week===Core.monday(today())?'重新安排本周？':'生成本周计划？',body:'按照课程目录、学习日和每日预算安排。已完成记录、人工编辑及暂停会保留。',confirm:'确认安排'}))return;
-  if(commit(base=>base.defaultWeek?.week===Core.monday(today())?Core.replan(base):Core.generateWeek(base),'本周计划已更新')){week=Core.monday(today());page='plan';render();}
+  if(await confirmPlan({type:'generate'},state.defaultWeek?.week===Core.monday(today())?'重新安排本周？':'生成本周计划？')){week=Core.monday(today());page='plan';render();}
 }
 function taskMenu(id){
   const task=state.tasks.find(t=>t.id===id);if(!task||task.done)return;
-  const handle=dialogs.open({title:'编辑任务',subtitle:task.title,className:'compact',body:'<div class="menu-actions"><button data-menu="edit">修改内容、日期和时长</button><button data-menu="delay">顺延到下个学习日</button>'+(task.origin==='auto'?'<button data-menu="course">整门课程顺延</button>'+(task.topicId?'<button data-menu="pause">永久暂停知识点</button>':''):'<button class="danger-text" data-menu="delete">删除自加任务</button>')+'</div>',footer:'<button class="button secondary wide cancel">取消</button>'});
+  const handle=dialogs.open({title:'编辑任务',subtitle:task.title,className:'compact',body:'<div class="menu-actions"><button data-menu="edit">修改内容、日期和时长</button><button data-menu="delay">顺延到下个学习日</button>'+(task.origin==='auto'?'<button data-menu="course">整门课程顺延</button>'+(task.topicId?'<button data-menu="pause">永久暂停知识点</button>':''):'<button class="danger-text" data-menu="delete">删除自加任务</button>')+'<button data-menu="reason">填写未完成原因</button>'+'</div>',footer:'<button class="button secondary wide cancel">取消</button>'});
   handle.element.querySelector('.cancel').onclick=()=>handle.close();
   handle.element.querySelectorAll('[data-menu]').forEach(button=>button.onclick=async()=>{
     const type=button.dataset.menu;
     if(type==='edit'){handle.close();taskForm(task);return;}
+    if(type==='reason'){handle.close();missReasonForm(task);return;}
     if((type==='pause'||type==='delete')&&!await dialogs.confirm({title:type==='pause'?'永久暂停这个知识点？':'删除自加任务？',body:type==='pause'?'恢复前不会自动安排，可以在计划页恢复。':'该自加任务将被删除，不影响其他学习记录。',confirm:type==='pause'?'确认暂停':'确认删除',danger:true}))return;
-    const commands={delay:base=>Core.delayOne(base,id),course:base=>Core.delayCourse(base,id),pause:base=>Core.pauseTopic(base,id),delete:base=>Core.deleteManualTask(base,id)};
-    if(commit(commands[type],type==='pause'?'已暂停，可随时恢复':'安排已更新')){handle.close();render();}
+    const ok=type==='course'?await confirmPlan({type:'course',id},'整门课程顺延？'):planCommand({type,id});
+    if(ok){handle.close();render();}
   });
 }
 function taskForm(task=null){
@@ -202,8 +156,8 @@ function taskForm(task=null){
   function save(){
     if(!form.reportValidity())return;
     const fields={title:form.elements.title.value.trim(),subject:form.elements.subject.value,date:form.elements.date.value,minutes:Number(form.elements.minutes.value),topicId};
-    const command=task?base=>Core.editTask(base,task.id,fields):base=>Core.addManualTask(base,fields);
-    if(commit(command)){dirty=false;handle.close();render();}
+    const command=task?{type:'edit',id:task.id,fields}:{type:'add',fields};
+    if(planCommand(command)){dirty=false;handle.close();render();}
   }
   form.onsubmit=event=>{event.preventDefault();save();};
   handle.element.querySelector('.task-save').onclick=save;
@@ -222,11 +176,10 @@ function topicPicker(selected,onChoose){
   handle.element.querySelector('.return-form').onclick=()=>handle.close();draw();
 }
 function original(){
-  const snapshot=state.defaultWeek;if(!snapshot||snapshot.week!==week)return;
+  const snapshot=state.weeklyPlans?.[week]||state.defaultWeek;if(!snapshot||snapshot.week!==week)return;
   const handle=dialogs.open({title:'本周原版计划',subtitle:'只读查看，日常编辑不会改写此快照',body:snapshot.tasks.length?snapshot.tasks.map(t=>taskHTML(t,true)).join(''):empty('这一周没有默认任务'),footer:week===Core.monday(today())?'<button class="button secondary wide restore-default">恢复默认计划</button>':''});
   handle.element.querySelector('.restore-default')?.addEventListener('click',async()=>{
-    if(!await dialogs.confirm({title:'恢复本周默认计划？',body:'撤销本周新增、编辑、顺延及本周发起的永久暂停。实际完成历史保留，并按当前学习日处理漏学。',confirm:'恢复默认'}))return;
-    if(commit(base=>Core.restoreDefault(base),'已恢复默认安排')){handle.close();render();}
+    if(await confirmPlan({type:'restore'},'恢复本周默认计划？','default')){handle.close();render();}
   });
 }
 async function saveSettings(event){
@@ -258,7 +211,7 @@ async function importBackup(raw){
     const candidate=parseBackup(raw);
     if(!await dialogs.confirm({title:'恢复这份备份？',body:'备份中有 '+candidate.tasks.length+' 项任务、'+candidate.sessions.length+' 条专注记录。恢复将替换本机当前的学习记录。',confirm:'确认恢复'}))return;
     if(!store){store=Object.create(Store.prototype);store.backend=createBackend();store.raw=store.backend.read();store.pending=null;}
-    store.save(candidate,store.backend.read());state=store.state;settingsDirty=false;page='home';clearError();render();toast('备份已恢复');
+    store.save(candidate,store.backend.read(),'import');state=store.state;settingsDirty=false;page='home';clearError();render();toast('备份已恢复');
   }catch(failure){banner(failure.message);}
 }
 async function onAction(key){
@@ -271,11 +224,19 @@ async function onAction(key){
     case 'original':return original();
     case 'add':return taskForm();
     case 'records':return navigate('records');
-    case 'start-focus':focusSubject=document.querySelector('#focus-subject')?.value||focusSubject;if(commit(base=>Core.startTimer(base,focusSubject,focusDuration),''))render();break;
-    case 'pause':commit(base=>Core.pauseTimer(base),'已暂停');break;
-    case 'resume':commit(base=>Core.resumeTimer(base),'继续加油');break;
+    case 'summary':return navigate('summary');
+    case 'manual-session':return manualSessionForm();
+    case 'toggle-weak':weakOnly=!weakOnly;render();break;
+    case 'weak-list':weakOnly=true;query='';return navigate('progress');
+    case 'adjustments':return adjustmentPanel();
+    case 'undo-plan':return undoLast();
+    case 'recovery-list':return recoveryPanel();
+    case 'retry-load':try{store=new Store(createBackend());state=store.state;clearError();render();reconcile();}catch(error){banner(error.message);}break;
+    case 'start-focus':focusSubject=document.querySelector('#focus-subject')?.value||focusSubject;focusCommand('start',{subject:focusSubject,duration:focusDuration});break;
+    case 'pause':focusCommand('pause');break;
+    case 'resume':focusCommand('resume');break;
     case 'end':return endFocus();
-    case 'cancel-focus':if(await dialogs.confirm({title:'放弃本轮专注？',body:'这次计时不会写入学习记录。',confirm:'放弃本轮',danger:true}))commit(base=>Core.cancelTimer(base),'本轮已取消');break;
+    case 'cancel-focus':if(await dialogs.confirm({title:'放弃本轮专注？',body:'这次计时不会写入学习记录。',confirm:'放弃本轮',danger:true}))focusCommand('cancel');break;
     case 'retry-focus':try{store.retryFinish();state=store.state;clearError();render();toast('专注记录已保存');}catch(failure){banner(failure.message);}break;
     case 'auto-date':{const form=document.querySelector('#settings-form');form.elements.examDate.value=Core.autoExamDate();form.elements.examDateMode.value='auto';document.querySelector('#exam-mode').textContent='自动';settingsDirty=true;break;}
     case 'export':return exportBackup();
@@ -294,8 +255,10 @@ root.addEventListener('click',event=>{
   if(button.dataset.action)return void onAction(button.dataset.action);
   if(button.dataset.start)return startTask(button.dataset.start);
   if(button.dataset.edit)return taskMenu(button.dataset.edit);
-  if(button.dataset.resume)return void commit(base=>Core.resumeTopic(base,button.dataset.resume),'已恢复安排');
-  if(button.dataset.expand){const id=button.dataset.expand;if(expanded.has(id))expanded.delete(id);else expanded.add(id);render();return;}
+  if(button.dataset.resume)return void planCommand({type:'resume',id:button.dataset.resume});
+  if(button.dataset.topicInfo)return topicInfo(button.dataset.topicInfo);
+  if(button.dataset.sessionEdit)return manualSessionForm(button.dataset.sessionEdit);
+  if(button.dataset.expand){const id=button.dataset.expand,before=document.querySelector('#subject-'+CSS.escape(id))?.getBoundingClientRect().height||0;if(expanded.has(id))expanded.delete(id);else expanded.add(id);render();animateResize(document.querySelector('#subject-'+CSS.escape(id)),before);return;}
   if(button.dataset.level){const id=button.dataset.level;return void commit(base=>Core.setLevel(base,id,((base.progress[id]?.level||0)+1)%4),'掌握程度已更新');}
   if(button.dataset.duration){focusDuration=Number(button.dataset.duration);render();return;}
   if(button.dataset.records){recordsFilter={...recordsFilter,type:button.dataset.records,page:1};return void navigate('records');}
@@ -309,11 +272,15 @@ root.addEventListener('keydown',event=>{
   if(page==='plan'&&(event.key==='ContextMenu'||event.shiftKey&&event.key==='F10')){event.preventDefault();taskMenu(row.dataset.id);}
 });
 function reconcile(){
+  refreshNativePending();
   if(!store||store.pending)return;
   try{
     store.load();state=store.state;
+    if(store.pending){if(!dialogs.active&&!settingsDirty)render();return;}
+    if(store.raw&&JSON.parse(store.raw).schemaVersion===1){store.save(state);state=store.state;}
     if(state.onboardingCompleted){
-      const next=Core.syncTimer(Core.processMissed(Core.refreshAutoExamDate(state)));
+      let next=Features.reconcile(state);
+      if(!store.backend.focus)next=Core.syncTimer(next);
       if(JSON.stringify(next)!==JSON.stringify(state))store.save(next);
       state=store.state;
     }
@@ -321,9 +288,11 @@ function reconcile(){
   }catch(failure){banner(failure.message);}
 }
 function tick(){
+  refreshNativePending();
   if(!store||!state?.onboardingCompleted||document.hidden||store.pending)return;
   try{
     const previous=state.timer;store.load();state=store.state;
+    if(store.pending){if(!dialogs.active&&!settingsDirty)render();return;}
     const synced=Core.syncTimer(state);
     if(state.timer&&!synced.timer){
       try{store.finish(Math.min(Date.now(),state.timer.until));state=store.state;toast('本轮完成，起身活动一下吧');}
@@ -340,7 +309,9 @@ function tick(){
 }
 window.Qingzhou={
   nativeEvent(type,value){
+    if(type==='appearance'){document.documentElement.dataset.theme=(globalThis.QingzhouAndroid?.darkMode?.()??matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';document.documentElement.dataset.motion=globalThis.QingzhouAndroid?.reducedMotion?.()?'off':'on';return;}
     if(type==='resume')reconcile();
+    else if(type==='widgetStart'){reconcile();if(dialogs.active||settingsDirty){toast('先保存或关闭当前编辑，再开始专注');return;}const task=state?.tasks.find(t=>t.date===today()&&!t.done&&!t.queued&&!t.suspended);if(state?.timer)void navigate('focus');else if(task)startTask(task.id);else if(state?.onboardingCompleted)void navigate('plan');}
     else if(type==='focus'){reconcile();void navigate('focus');}
     else if(type==='import')void importBackup(value);
     else if(type==='error'||type==='serviceError')banner(value);
@@ -352,7 +323,55 @@ window.Qingzhou={
     return false;
   }
 };
-if(['127.0.0.1','localhost'].includes(location.hostname))window.QingzhouTest={getState:()=>state,getStore:()=>store,reconcile,navigate,render,tick,dialogs,startTask};
+if(['127.0.0.1','localhost'].includes(location.hostname)||globalThis.QingzhouAndroid?.isDebugBuild?.())window.QingzhouTest={getState:()=>state,getStore:()=>store,reconcile,navigate,render,tick,dialogs,startTask};
 document.addEventListener('visibilitychange',()=>{if(!document.hidden)reconcile();});
 document.addEventListener('keydown',event=>{if(event.key==='Escape'&&!dialogs.active&&page!=='home'){event.preventDefault();void navigate('home');}});
 render();if(state)reconcile();interval=setInterval(tick,1000);
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>window.Qingzhou.nativeEvent('appearance'));
+
+function refreshNativePending(){if(store?.pending?.native)try{store.load();state=store.state;if(!store.pending&&!dialogs.active&&!settingsDirty){render();toast('本轮专注记录已保存');}}catch(error){banner(error.message);}}
+
+function planCommand(command){const ok=commit(base=>Features.evaluatePlan(base,{command}).state,'');if(ok)toast('安排已更新',false,()=>undoLast());return ok;}
+function undoLast(){let skipped=0;const ok=commit(base=>{const result=Features.undoPlan(base);skipped=result.skipped;return result.state;},'');if(ok)toast(skipped?'已撤销可恢复的修改，保留 '+skipped+' 项已完成或已变化内容':'已撤销上次调整');}
+async function confirmPlan(command,title,reason='daily'){
+  try{store.load();if(store.pending)throw new Error('请先保存上一轮专注结果。');const expected=store.raw,result=Features.evaluatePlan(store.state,{command});
+    return await new Promise(resolve=>{const changes=result.changes;
+      const handle=dialogs.open({title,subtitle:changes.length+' 项安排将变化；已完成和明确安排按规则保留',body:changes.length?'<div class="change-list">'+changes.map(c=>'<article><strong>'+e(c.title)+'</strong><small>'+e(({added:'新增',removed:'移除',paused:'永久暂停',resumed:'恢复',moved:'顺延',edited:'修改'}[c.type]))+' · '+e(c.from||'新任务')+' → '+e(c.queued?'待安排':c.to||'移除')+'</small>'+(c.reason?'<small>'+e(c.reason)+'</small>':'')+'</article>').join('')+'</div>':'<p class="confirm-copy">当前安排无需变化。</p>',footer:'<button class="button secondary cancel">取消</button><button class="button primary confirm">确认调整</button>',onClose:()=>{handle.close();resolve(false);}});
+      handle.element.querySelector('.cancel').onclick=()=>{handle.close();resolve(false);};handle.element.querySelector('.confirm').onclick=()=>{try{store.save(result.state,expected,reason);state=store.state;handle.close();render();toast('安排已更新',false,()=>undoLast());resolve(true);}catch(error){dialogs.error(handle,error.message+' 如记录已变化，请返回后重新核对。');}};
+    });
+  }catch(error){banner(error.message);return false;}
+}
+function adjustmentPanel(){
+  const list=state.adjustments.filter(a=>Core.monday(a.date)===week).slice().reverse();const handle=dialogs.open({title:'计划调整',subtitle:'手动操作和系统漏学顺延的来源与结果',body:list.length?list.map(a=>'<article class="adjustment-item"><strong>'+e(a.label)+'</strong><small>'+a.date+' · '+(a.source==='system'?'系统自动处理':'你的操作')+'</small>'+a.changes.map(c=>'<p>'+e(c.title)+'<span>'+e(c.from||'新增')+' → '+e(c.queued?'待安排':c.to||'移除')+'</span></p>').join('')+'</article>').join(''):empty('本周还没有调整记录'),footer:state.lastUndo?'<button class="button secondary wide undo-last">撤销上次调整</button>':''});
+  handle.element.querySelector('.undo-last')?.addEventListener('click',()=>{undoLast();handle.close();render();});
+}
+function focusCommand(action,fields={}){
+  try{if(store.backend.focus){store.focus(action,{...(state.timer&&action!=='start'?{id:state.timer.id}:{}),...fields});state=store.state;clearError();if(!dialogs.active&&!settingsDirty)render();return true;}
+    const commands={start:s=>Core.startTimer(s,fields.subject,fields.duration),pause:Core.pauseTimer,resume:Core.resumeTimer,cancel:Core.cancelTimer};if(!commands[action])throw new Error('当前操作不可用');return commit(commands[action],'');
+  }catch(error){try{store.load();state=store.state;}catch{}if(!dialogs.active&&!settingsDirty)render();banner(error.message);return false;}
+}
+function protectForm(handle,form){let dirty=false;form.addEventListener('input',()=>dirty=true);form.addEventListener('change',()=>dirty=true);handle.onClose=async()=>{if(!dirty||await dialogs.confirm({title:'放弃这次修改？',body:'未保存的内容会被放弃。',confirm:'放弃修改'}))handle.close();};return()=>dirty=false;}
+function topicInfo(id){
+  const topic=Core.topicById[id];if(!topic)return;const weak=state.weakPoints[id],subject=Core.subjectById[topic.subject];
+  const handle=dialogs.open({title:topic.title,subtitle:subject.name+' · '+subject.chapters.find(c=>c.id===topic.chapter)?.title,body:'<p class="field-label">掌握程度 · 与任务打卡独立</p><div class="mastery-choices">'+Core.LEVELS.map((label,level)=>'<button class="filter-pill '+((state.progress[id]?.level||0)===level?'selected':'')+'" data-choice="'+level+'">'+label+'</button>').join('')+'</div>'+(weak&&weak.status!=='resolved'?'<div class="weak-detail"><strong>'+(weak.status==='awaiting'?'这次回顾完成了，感觉如何？':'需要再看')+'</strong><p>'+e(weak.reason||'尚未填写原因')+'</p><small>'+weak.dueDate+' 回顾</small></div>':'<p class="help">记下哪里还不熟，下次回顾时更有方向。</p>'),footer:'<button class="button secondary mark-weak">'+(weak?.status==='awaiting'?'仍需再看':weak&&weak.status!=='resolved'?'修改回顾':'需要再看')+'</button>'+(weak&&weak.status!=='resolved'?'<button class="button primary '+(weak.status==='awaiting'?'resolve-weak':'schedule-review')+'">'+(weak.status==='awaiting'?'已解决':'加入计划')+'</button>':'')});
+  handle.element.querySelectorAll('[data-choice]').forEach(button=>button.onclick=()=>{if(commit(base=>Core.setLevel(base,id,Number(button.dataset.choice)),'掌握程度已保存',{rerender:false})){handle.element.querySelectorAll('[data-choice]').forEach(b=>b.classList.toggle('selected',b===button));render();}});
+  handle.element.querySelector('.mark-weak').onclick=()=>{handle.close();weakForm(id);};handle.element.querySelector('.schedule-review')?.addEventListener('click',()=>{if(planCommand({type:'review',id})){handle.close();render();}});handle.element.querySelector('.resolve-weak')?.addEventListener('click',()=>{if(commit(base=>Features.resolveWeak(base,id),'这一步已经踏实了')){handle.close();render();}});
+}
+function weakForm(id){
+  const old=state.weakPoints[id],due=old?.status==='open'?old.dueDate:Core.addDays(today(),7);const handle=dialogs.open({title:old?.status==='awaiting'?'安排下一次回顾':'需要再看',subtitle:Core.topicById[id].title,body:'<form id="weak-form"><label class="field-label" for="weak-reason">哪里还不熟（选填）</label><textarea id="weak-reason" name="reason" maxlength="500" rows="4" placeholder="例如：链表逆置还不熟，下次动手再写一遍">'+e(old?.reason||'')+'</textarea><label class="field-label" for="weak-date">下次回顾日期</label><input id="weak-date" name="dueDate" type="date" required value="'+due+'"><p class="help">标记不会改变掌握程度。你可以主动加入计划，也会在重新安排时优先考虑。</p></form>',footer:'<button class="button primary wide save-weak">保存回顾</button>'});
+  const form=handle.element.querySelector('form'),clean=protectForm(handle,form);const save=()=>{if(!form.reportValidity())return;if(commit(base=>Features.markWeak(base,id,{reason:form.elements.reason.value,dueDate:form.elements.dueDate.value}),'回顾已记下')){clean();handle.close();render();}};handle.element.querySelector('.save-weak').onclick=save;form.onsubmit=event=>{event.preventDefault();save();};
+}
+function missReasonForm(task){
+  const handle=dialogs.open({title:'未完成原因',subtitle:'只供你回看，不影响顺延，也不是必填',body:'<form id="reason-form"><fieldset><legend>'+e(task.title)+'</legend><div class="reason-options">'+['',...Features.REASONS].map(reason=>'<label><input type="radio" name="reason" value="'+reason+'" '+((task.missReason||'')===reason?'checked':'')+'><span>'+e(reason||'暂不填写')+'</span></label>').join('')+'</div></fieldset></form>',footer:'<button class="button primary wide save-reason">保存</button>'});
+  const form=handle.element.querySelector('form'),clean=protectForm(handle,form);handle.element.querySelector('.save-reason').onclick=()=>{const reason=new FormData(form).get('reason');if(commit(base=>Features.setMissReason(base,task.id,reason),'原因已保存')){clean();handle.close();render();}};
+}
+function manualSessionForm(id=null){
+  const old=id?state.sessions.find(s=>s.id===id):null;if(id&&old?.source!=='manual')return;const handle=dialogs.open({title:old?'编辑手动补记':'手动补记专注',subtitle:'按实际投入填写，补记会单独标注',body:'<form id="manual-session-form"><label class="field-label">课程</label><select name="subject">'+selectOptions(subjects(),old?.subject||subjects()[0].id)+'</select><div class="form-grid"><label><span class="field-label">日期</span><input type="date" name="date" required max="'+today()+'" value="'+(old?.date||today())+'"></label><label><span class="field-label">时长（分钟）</span><input type="number" name="minutes" inputmode="numeric" required min="1" max="960" value="'+(old?old.seconds/60:'')+'"></label></div><label class="field-label">备注（选填）</label><textarea name="note" maxlength="200" rows="3">'+e(old?.note||'')+'</textarea></form>',footer:(old?'<button class="button danger delete-session">删除补记</button>':'')+'<button class="button primary save-session">保存补记</button>'});
+  const form=handle.element.querySelector('form'),clean=protectForm(handle,form);const save=()=>{if(!form.reportValidity())return;const fields=Object.fromEntries(new FormData(form));if(commit(base=>Features.saveManualSession(base,fields,id),'补记已保存')){clean();handle.close();render();}};handle.element.querySelector('.save-session').onclick=save;form.onsubmit=event=>{event.preventDefault();save();};handle.element.querySelector('.delete-session')?.addEventListener('click',async()=>{if(await dialogs.confirm({title:'删除这条手动补记？',body:'只删除这条补记，不影响计时产生的记录。',confirm:'确认删除',danger:true})&&commit(base=>Features.deleteManualSession(base,id),'补记已删除')){clean();handle.close();render();}});
+}
+function recoveryPanel(){
+  try{const native=globalThis.QingzhouAndroid,reply=native?.recoveryList?JSON.parse(native.recoveryList()):{ok:true,items:[]};if(!reply.ok)throw new Error(reply.message);const handle=dialogs.open({title:'本机自动恢复点',subtitle:'最多保留最近5份有效记录。恢复将替换当前学习记录。',body:reply.items.length?reply.items.map(item=>'<button class="recovery-item" data-recovery="'+e(item.id)+'"><strong>'+e(new Date(item.createdAt).toLocaleString('zh-CN'))+'</strong><small>'+e(item.version)+' · '+e(({daily:'每日自动保留',import:'导入前',restore:'恢复前',default:'恢复默认前'}[item.reason]||item.reason))+'</small><p>'+item.tasks+' 项任务 · '+item.sessions+' 条专注记录</p></button>').join(''):empty('还没有自动恢复点','首次有效记录保存后，会在每日修改或重要替换前保留'),footer:'<button class="button secondary wide close-recovery">返回</button>'});
+    handle.element.querySelector('.close-recovery').onclick=()=>handle.close();handle.element.querySelectorAll('[data-recovery]').forEach(button=>button.onclick=async()=>{try{const entry=JSON.parse(native.recoveryRead(button.dataset.recovery));if(!entry.ok)throw new Error(entry.message);const candidate=Core.validateState(JSON.parse(entry.raw));if(!await dialogs.confirm({title:'恢复到这个时间点？',body:'将恢复 '+candidate.tasks.length+' 项任务和 '+candidate.sessions.length+' 条专注记录。当前有效记录会先自动保留，时间点之后的修改将被替换。',confirm:'确认恢复'}))return;
+      if(!store){store=Object.create(Store.prototype);store.backend=createBackend();store.raw=store.backend.read();store.pending=null;}store.save(candidate,store.backend.read(),'restore');state=store.state;settingsDirty=false;page='home';handle.close();clearError();render();reconcile();toast('记录已恢复');}catch(error){dialogs.error(handle,error.message);}});
+  }catch(error){banner(error.message||'读取恢复点失败');}
+}

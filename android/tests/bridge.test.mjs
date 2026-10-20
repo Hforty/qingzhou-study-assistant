@@ -46,3 +46,11 @@ test('raw export reads exact damaged bytes rather than exporting the transport e
   const raw='损坏的原始记录\n"保留引号"\\undefined',native=nativeDisk(raw);
   assert.equal(createBackend({QingzhouAndroid:native}).read(),raw);assert.equal(native.writes,0);
 });
+test('unchanged native revisions avoid retransferring the entire learning history every tick',()=>{
+  const native=nativeDisk(JSON.stringify(createState('2026-10-20')));let reads=0;const old=native.readState.bind(native);native.readState=()=>{reads++;return old();};native.revision=1;native.stateRevision=()=>native.revision;
+  const backend=createBackend({QingzhouAndroid:native}),store=new Store(backend);const first=store.state;store.load();store.load();assert.equal(reads,1);assert.equal(store.state,first);
+  const next=JSON.parse(native.raw);next.settings.name='后台已更新';native.raw=JSON.stringify(next);native.revision++;store.load();assert.equal(reads,2);assert.equal(store.state.settings.name,'后台已更新');
+});
+test('a failed revision lookup never invents an empty record',()=>{
+  const native=nativeDisk('{broken');native.stateRevision=()=>undefined;assert.throws(()=>new Store(createBackend({QingzhouAndroid:native})));assert.equal(native.raw,'{broken');
+});
