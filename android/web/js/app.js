@@ -194,8 +194,9 @@ async function saveSettings(event){
 }
 async function endFocus(){
   if(!state.timer||store.pending)return;
-  if(!await dialogs.confirm({title:'结束本轮专注？',body:'按照实际专注时间记录，暂停时间不计入。',confirm:'结束并保存'}))return;
-  try{store.finish(Date.now());state=store.state;render();toast('已记录这次专注，休息一下吧');}
+  const rest=state.timer.mode==='break';
+  if(!await dialogs.confirm({title:rest?'结束这次休息？':'结束本轮专注？',body:rest?'休息不会计入学习时长，准备好后再开始下一轮。':'按照实际专注时间记录，暂停时间不计入。',confirm:rest?'结束休息':'结束并保存'}))return;
+  try{store.finish(Date.now());state=store.state;render();showFocusResult();toast(rest?'休息已结束，按自己的节奏继续':'已记录这次专注，休息一下吧');}
   catch(failure){state=store.state;render();banner(failure.message);}
 }
 function exportBackup(raw=false){
@@ -246,7 +247,7 @@ async function onAction(key){
     case 'pause':focusCommand('pause');break;
     case 'resume':focusCommand('resume');break;
     case 'end':return endFocus();
-    case 'cancel-focus':if(await dialogs.confirm({title:'放弃本轮专注？',body:'这次计时不会写入学习记录。',confirm:'放弃本轮',danger:true}))focusCommand('cancel');break;
+    case 'cancel-focus':{const rest=state.timer?.mode==='break';if(await dialogs.confirm({title:rest?'取消这次休息？':'放弃本轮专注？',body:rest?'休息不会计入学习时长。':'这次计时不会写入学习记录。',confirm:rest?'取消休息':'放弃本轮',danger:!rest}))focusCommand('cancel');break;}
     case 'retry-focus':try{store.retryFinish();state=store.state;clearError();render();toast('专注记录已保存');}catch(failure){banner(failure.message);}break;
     case 'auto-date':{const form=document.querySelector('#settings-form');form.elements.examDate.value=Core.autoExamDate();form.elements.examDateMode.value='auto';document.querySelector('#exam-mode').textContent='自动';settingsDirty=true;break;}
     case 'export':return exportBackup();
@@ -319,7 +320,7 @@ function tick(){
       const display=document.querySelector('#clock');
       if(display){const left=state.timer?Core.syncTimer(state).timer?.remaining??0:focusDuration,shown=state.timer?.mode==='stopwatch'?state.timer.duration-left:!state.timer&&focusMode==='stopwatch'?0:left;display.textContent=clock(shown);display.classList.toggle('long-clock',shown>=3600);}
     }
-    if(previous&&!state.timer&&!dialogs.active&&!settingsDirty)render();
+    if(previous&&!state.timer&&!dialogs.active&&!settingsDirty){render();showFocusResult();}
     if(state.lastProcessedDate!==today())reconcile();
   }catch(failure){banner(failure.message);}
 }
@@ -328,7 +329,7 @@ window.Qingzhou={
     if(type==='appearance'){document.documentElement.dataset.theme=(globalThis.QingzhouAndroid?.darkMode?.()??matchMedia('(prefers-color-scheme: dark)').matches)?'dark':'light';document.documentElement.dataset.motion=globalThis.QingzhouAndroid?.reducedMotion?.()?'off':'on';return;}
     if(type==='resume')reconcile();
     else if(type==='widgetStart'){reconcile();if(dialogs.active||settingsDirty){toast('先保存或关闭当前编辑，再开始专注');return;}const task=state?.tasks.find(t=>t.date===today()&&!t.done&&!t.queued&&!t.suspended);if(state?.timer)void navigate('focus');else if(task)startTask(task.id);else if(state?.onboardingCompleted)void navigate('plan');}
-    else if(type==='focus'){reconcile();void navigate('focus');}
+    else if(type==='focus'){reconcile();void navigate('focus').then(showFocusResult);}
     else if(type==='reminder'){reconcile();if(!state?.onboardingCompleted)return;if(dialogs.active||settingsDirty){toast('先保存或关闭当前编辑，再查看提醒任务');return;}try{const notice=JSON.parse(value);if(notice.source==='todo')void navigate('list');else if(notice.start){const task=notice.source==='task'?state.tasks.find(t=>t.id===notice.id&&!t.done&&!t.queued&&!t.suspended):state.tasks.find(t=>t.date===today()&&!t.done&&!t.queued&&!t.suspended);if(task)startTask(task.id);else void navigate('list');}else void navigate('list');}catch{void navigate('list');}}
     else if(type==='notifications'){if(page==='reminders'&&!dialogs.active&&!settingsDirty)render();}
     else if(type==='import')void importBackup(value);
@@ -393,8 +394,8 @@ function adjustmentPanel(){
   handle.element.querySelector('.undo-last')?.addEventListener('click',()=>{undoLast();handle.close();render();});
 }
 function focusCommand(action,fields={}){
-  try{if(store.backend.focus){store.focus(action,{...(state.timer&&action!=='start'?{id:state.timer.id}:{}),...fields});state=store.state;clearError();if(!dialogs.active&&!settingsDirty)render();if(action==='start')offerNotifications();return true;}
-    const commands={start:s=>Core.startTimer(s,fields.subject,fields.duration,Date.now(),fields),pause:Core.pauseTimer,resume:Core.resumeTimer,cancel:Core.cancelTimer};if(!commands[action])throw new Error('当前操作不可用');return commit(commands[action],'');
+  try{if(store.backend.focus){store.focus(action,{...(state.timer&&action!=='start'?{id:state.timer.id}:{}),...fields});state=store.state;clearError();if(!dialogs.active&&!settingsDirty)render();if(action==='start'){offerNotifications();requestAnimationFrame(()=>window.scrollTo(0,0));}return true;}
+    const commands={start:s=>Core.startTimer(s,fields.subject,fields.duration,Date.now(),fields),pause:Core.pauseTimer,resume:Core.resumeTimer,cancel:Core.cancelTimer};if(!commands[action])throw new Error('当前操作不可用');const ok=commit(commands[action],'');if(ok&&action==='start')requestAnimationFrame(()=>window.scrollTo(0,0));return ok;
   }catch(error){try{store.load();state=store.state;}catch{}if(!dialogs.active&&!settingsDirty)render();banner(error.message);return false;}
 }
 function protectForm(handle,form){let dirty=false;form.addEventListener('input',()=>dirty=true);form.addEventListener('change',()=>dirty=true);handle.onClose=async()=>{if(!dirty||await dialogs.confirm({title:'放弃这次修改？',body:'未保存的内容会被放弃。',confirm:'放弃修改'}))handle.close();};return()=>dirty=false;}
@@ -422,3 +423,5 @@ function recoveryPanel(){
       if(!store){store=Object.create(Store.prototype);store.backend=createBackend();store.raw=store.backend.read();store.pending=null;}store.save(candidate,store.backend.read(),'restore');state=store.state;settingsDirty=false;page='home';handle.close();clearError();render();reconcile();toast('记录已恢复');}catch(error){dialogs.error(handle,error.message);}});
   }catch(error){banner(error.message||'读取恢复点失败');}
 }
+function showFocusResult(){if(page==='focus'&&!state?.timer&&state?.lastFocusResult&&!dialogs.active)requestAnimationFrame(()=>document.querySelector('.focus-result')?.scrollIntoView({block:'center',behavior:'instant'}));}
+

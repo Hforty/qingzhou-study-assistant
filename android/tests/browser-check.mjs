@@ -247,7 +247,7 @@ try{
   });
   await test('休息计时支持暂停结束，学习记录和任务完成状态不变化',async()=>{
     const before=await state();await click('[data-action=rest-options]');await click('[data-rest-minutes="10"]');await click('.start-rest');assert.equal((await state()).timer.mode,'break');assert.equal((await state()).timer.duration,600);
-    await click('[data-action=pause]');assert.equal((await state()).timer.running,false);await click('[data-action=resume]');await click('[data-action=end]');await click('dialog .confirm');
+    await click('[data-action=pause]');assert.equal((await state()).timer.running,false);await click('[data-action=resume]');await click('[data-action=end]');assert.ok(await evaluate('document.querySelector("dialog").textContent.includes("休息不会计入学习时长")'));await click('dialog .confirm');
     const after=await state();assert.deepEqual(after.sessions,before.sessions);assert.deepEqual(after.completions,before.completions);assert.equal(after.lastFocusResult.mode,'break');
   });
   await test('正计时从零开始，暂停返回及结束后保留实际时长',async()=>{
