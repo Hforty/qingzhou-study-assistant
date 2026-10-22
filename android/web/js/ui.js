@@ -13,6 +13,8 @@ export const icon = (name,size=22) => {
     add:'<path d="M12 5v14M5 12h14"/>',
     play:'<path d="m9 5 11 7-11 7Z"/>',
     search:'<circle cx="10" cy="10" r="6"/><path d="m15 15 6 6"/>',
+    list:'<path d="M9 6h12M9 12h12M9 18h12M3 6h.01M3 12h.01M3 18h.01"/>',
+    reminders:'<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>',
     leaf:'<path d="M20 3C9 2 1 9 6 16s16 2 14-13ZM5 20 16 8"/>'
   };
   return '<svg width="'+size+'" height="'+size+'" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'+(paths[name]||paths.book)+'</svg>';

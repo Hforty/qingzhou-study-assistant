@@ -24,7 +24,7 @@ public class StudyWidget extends AppWidgetProvider {
         try{String raw=DataStore.read(c);JSONObject state=raw==null?null:new JSONObject(raw);
             if(state!=null&&state.optBoolean("onboardingCompleted")){
                 String today=new SimpleDateFormat("yyyy-MM-dd",Locale.ROOT).format(new Date());JSONObject timer=state.optJSONObject("timer");
-                if(timer!=null){title=FocusController.course(timer);detail=timer.optBoolean("running")?"本轮专注进行中":"本轮已暂停，按自己的节奏继续";button="返回专注";}
+                if(timer!=null){boolean rest="break".equals(timer.optString("mode"));title=rest?"休息一下":timer.optString("taskTitle",FocusController.course(timer));detail=timer.optBoolean("running")?rest?"休息不计入学习时长":"本轮专注进行中":"计时已暂停，按自己的节奏继续";button="返回计时";}
                 else if(!today.equals(state.optString("lastProcessedDate"))){detail="打开轻舟，核对今天的安排";button="查看今日计划";}
                 else{
                     JSONArray tasks=state.getJSONArray("tasks");JSONObject next=null;int done=0,total=0;
@@ -35,7 +35,7 @@ public class StudyWidget extends AppWidgetProvider {
             }
         }catch(Exception error){title="先保护好你的记录";detail="打开轻舟核对本机记录";}
         view.setTextViewText(R.id.widget_title,title);view.setTextViewText(R.id.widget_detail,detail);view.setTextViewText(R.id.widget_start,button);
-        Intent intent=new Intent(c,MainActivity.class).putExtra("widgetStart",start).putExtra("focus",!start&&"返回专注".equals(button)).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP|Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        Intent intent=new Intent(c,MainActivity.class).putExtra("widgetStart",start).putExtra("focus",!start&&"返回计时".equals(button)).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP|Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent open=PendingIntent.getActivity(c,1000+id,intent,PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         view.setOnClickPendingIntent(R.id.widget_start,open);view.setOnClickPendingIntent(R.id.widget_root,open);manager.updateAppWidget(id,view);
     }

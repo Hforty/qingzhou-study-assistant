@@ -1,20 +1,22 @@
 import * as Core from '../lib/qz/engine.js';
 import * as Features from '../lib/qz/features.js';
 import * as Views from './views.js';
+import * as Organizer from '../lib/qz/organizer.js';
+import * as OrganizerView from './organizer-view.js';
 import {patchHTML,animateIn,animateResize} from './dom.js';
 import { activeSubjects, activeTopics, activeGroups } from '../lib/qz/curriculum.js';
 import { Store, createBackend, makeBackup, parseBackup, bytes, MAX_BYTES } from './store.js';
 import { escapeHTML as e, icon, boat, toast, Dialogs, bindTaskGestures } from './ui.js';
 
 const root=document.querySelector('#app'),dialogs=new Dialogs();
-const titles={home:'今天，也向前一步',plan:'把这一周安排好',focus:'专心眼前这一件事',progress:'看见每一步积累',settings:'找到自己的节奏',records:'每一份努力都有迹可循',summary:'给下周，多一点从容'};
-const labels={home:'首页',plan:'学习计划',focus:'专注空间',progress:'学习进度',settings:'设置',records:'学习记录',summary:'本周小结'};
+const titles={home:'今天，也向前一步',plan:'把这一周安排好',focus:'专心眼前这一件事',progress:'看见每一步积累',settings:'找到自己的节奏',records:'每一份努力都有迹可循',summary:'给下周，多一点从容',list:'把想做的事，放在眼前',reminders:'在约定的时间，轻轻提醒'};
+const labels={home:'首页',plan:'学习计划',focus:'专注空间',progress:'学习进度',settings:'设置',records:'学习记录',summary:'本周小结',list:'任务清单',reminders:'学习提醒'};
 const navs=['home','plan','focus','progress','settings'];
 const today=()=>Core.dateKey();
 const duration=seconds=>Core.formatDuration(Math.max(0,seconds));
-const version=()=>globalThis.QingzhouAndroid?.version?.()||'1.1.0';
+const version=()=>globalThis.QingzhouAndroid?.version?.()||'1.2.0';
 let store,state,error='',page='home',week=Core.monday(today()),settingsDirty=false;
-let query='',expanded=new Set(),beforeSearch=null,weakOnly=false,focusSubject='math',focusDuration=1500;
+let query='',expanded=new Set(),beforeSearch=null,weakOnly=false,focusSubject='math',focusDuration=1500,focusMode='focus',focusTaskId='',listFilter='today';
 let renderedPage=null;
 let recordsFilter={type:'all',subject:'all',from:'',to:'',page:1},lastTimerId='',interval;
 try{store=new Store(createBackend());state=store.state;}catch(failure){error=failure.message;}
@@ -24,33 +26,31 @@ function subjects(){return activeSubjects(state.settings);}
 function name(subject,track){return Core.subjectName(subject,state.settings,track);}
 function selectOptions(list,value){return list.map(item=>'<option value="'+e(item.id)+'" '+(item.id===value?'selected':'')+'>'+e(item.name)+'</option>').join('');}
 function header(){return '<header class="topbar"><div><span class="eyebrow">QINGZHOU · 轻舟</span><h1>'+labels[page]+'</h1><p>'+titles[page]+'</p></div><div class="top-icon">'+icon(page==='home'?'leaf':page==='records'?'history':page,27)+'</div></header>';}
-function navigation(){return '<nav class="bottom-nav" aria-label="主导航">'+navs.map(id=>'<button data-nav="'+id+'" class="'+(page===id?'active':'')+'" '+(page===id?'aria-current="page"':'')+'>'+icon(id)+'<span>'+({home:'首页',plan:'计划',focus:'专注',progress:'进度',settings:'设置'}[id])+'</span></button>').join('')+'</nav>';}
+function navigation(){return '<nav class="bottom-nav" aria-label="主导航">'+navs.map(id=>'<button data-nav="'+id+'" class="'+((page===id||id==='plan'&&page==='list')?'active':'')+'" '+(page===id?'aria-current="page"':'')+'>'+icon(id)+'<span>'+({home:'首页',plan:'计划',focus:'专注',progress:'进度',settings:'设置'}[id])+'</span></button>').join('')+'</nav>';}
 function empty(text,detail=''){return '<div class="empty">'+icon('book',30)+'<p>'+e(text)+'</p>'+(detail?'<small>'+e(detail)+'</small>':'')+'</div>';}
 function action(text,key,css='secondary'){return '<button class="button '+css+'" data-action="'+key+'">'+text+'</button>';}
 function taskHTML(task,readonly=false){
   const label=name(task.subject,task.examTrack),done=task.done;
   if(readonly)return '<div class="original-task"><strong>'+e(task.title)+'</strong><small>'+e(task.date)+' · '+e(label)+' · '+task.minutes+' 分钟'+(task.kind==='review'?' · 查漏回顾':'')+'</small></div>';
-  return '<div class="task-swipe"><span class="swipe-label">'+(done?'撤销完成':'完成')+'</span><div class="task-row '+(done?'completed':'')+'" data-id="'+e(task.id)+'" tabindex="0"><div class="task-copy"><strong>'+e(task.title)+'</strong>'+(page==='plan'&&!done?'<button class="task-edit" data-edit="'+e(task.id)+'" aria-label="编辑任务：'+e(task.title)+'">编辑</button>':'')+'<small>'+e(label)+'<span> · </span>'+task.minutes+' 分钟'+(task.kind==='review'?' · 查漏回顾':'')+'</small></div>'+(done?'<span class="done-label">'+icon('check',16)+'已完成</span>':task.suspended?'<span class="pill">已暂停</span>':task.queued?'<span class="pill">待安排</span>':'<button class="start-button" data-start="'+e(task.id)+'" aria-label="开始学习：'+e(task.title)+'">开始</button>')+'</div></div>';
+  return '<div class="task-swipe"><span class="swipe-label">'+(done?'撤销完成':'完成')+'</span><div class="task-row '+(done?'completed':'')+'" data-id="'+e(task.id)+'" tabindex="0"><div class="task-copy"><strong>'+e(task.title)+'</strong>'+((page==='plan'||page==='list')&&!done?'<button class="task-edit" data-edit="'+e(task.id)+'" aria-label="编辑任务：'+e(task.title)+'">编辑</button>':'')+'<small>'+e(label)+'<span> · </span>'+task.minutes+' 分钟'+(task.kind==='review'?' · 查漏回顾':'')+'</small></div>'+(done?'<span class="done-label">'+icon('check',16)+'已完成</span>':task.suspended?'<span class="pill">已暂停</span>':task.queued?'<span class="pill">待安排</span>':'<button class="start-button" data-start="'+e(task.id)+'" aria-label="开始学习：'+e(task.title)+'">开始</button>')+'</div></div>';
 }
-function home(){return Views.home({state,today:today(),name,taskHTML,pending:store.pending});}
+function home(){
+  const upcoming=Organizer.nextReminder(state),todoCount=state.todos.filter(t=>!t.done&&(!t.date||t.date<=today())).length;
+  const links='<div class="home-workspace-links"><button data-nav="list">'+icon('check',20)+'<span><strong>任务清单</strong><small>'+todoCount+' 件日常待办</small></span>'+icon('arrow',15)+'</button><button data-nav="reminders">'+icon('plan',20)+'<span><strong>学习提醒</strong><small>'+e(upcoming?upcoming.time+' · '+upcoming.title:'设置一个开始的时间')+'</small></span>'+icon('arrow',15)+'</button></div>';
+  return Views.home({state,today:today(),name,taskHTML,pending:store.pending}).replace('<section class="card">',links+'<section class="card">');
+}
 function plan(){return Views.plan({state,today:today(),week,taskHTML});}
-function focus(){
-  const timer=state.timer,selected=timer?.subject||focusSubject,frozen=store.pending?.candidate.sessions.find(s=>s.id===timer?.id),remaining=store.pending?Math.max(0,(timer?.duration||focusDuration)-(frozen?.seconds||0)):timer?Core.syncTimer(state).timer?.remaining??0:focusDuration;
-  const seconds=state.sessions.filter(s=>s.date===today()).reduce((sum,s)=>sum+s.seconds,0);
-  return '<section class="card timer-card"><p class="muted">今日已专注 <span id="focus-today">'+e(duration(seconds))+'</span></p><div class="clock" id="clock" aria-live="off">'+clock(remaining)+'</div>'+
-  (store.pending?'<p class="save-warning">本轮结果尚未保存，计时已冻结</p>'+action('重试保存','retry-focus','primary'):timer?'<p class="focus-subject">'+e(name(timer.subject,timer.examTrack))+'</p><div class="actions">'+action(timer.running?'暂停':'继续',timer.running?'pause':'resume','primary')+action('提前结束','end')+'</div><button class="text-button cancel-focus" data-action="cancel-focus">放弃本轮</button>':
-  '<label class="field-label" for="focus-subject">本轮课程</label><select id="focus-subject">'+selectOptions(subjects(),selected)+'</select><div class="duration-options">'+[25,50,90].map(minutes=>'<button class="'+(focusDuration===minutes*60?'active':'')+'" data-duration="'+minutes*60+'">'+minutes+' 分钟</button>').join('')+'</div>'+action(icon('play',18)+' 开始专注','start-focus','primary'))+
-  '<p class="timer-caption">一次只做一件事，休息也是计划的一部分。</p></section>'+
-  '<section class="card"><div class="section-head"><h2>今日各课程</h2><button class="text-button" data-records="focus">全部记录 '+icon('arrow',15)+'</button></div>'+(()=>{const totals=new Map();for(const session of state.sessions.filter(s=>s.date===today())){const label=name(session.subject,session.examTrack);totals.set(label,(totals.get(label)||0)+session.seconds);}return totals.size?[...totals].map(([label,seconds])=>'<div class="setting-row"><span>'+e(label)+'</span><strong>'+e(duration(seconds))+'</strong></div>').join(''):empty('今天的专注，从现在开始');})()+'</section>'+
-  '<button class="card record-entry" data-records="focus"><span class="entry-icon">'+icon('history',24)+'</span><span><strong>专注记录</strong><small>按课程查看实际投入的时间</small></span>'+icon('arrow',18)+'</button>';
-}
-function clock(seconds){return String(Math.floor(seconds/60)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0');}
+function focus(){return OrganizerView.focus({state,today:today(),subject:focusSubject,duration:focusDuration,mode:focusMode,taskId:focusTaskId,options:selectOptions(subjects(),state.timer?.subject||focusSubject),name,clock,pending:store.pending});}
+function checklist(){return OrganizerView.checklist({state,today:today(),filter:listFilter,taskHTML,name});}
+function reminders(){return OrganizerView.reminders({state});}
+function clock(seconds){seconds=Math.max(0,Math.floor(seconds));return (seconds>=3600?String(Math.floor(seconds/3600)).padStart(2,'0')+':':'')+String(Math.floor(seconds/60)%(seconds>=3600?60:1000)).padStart(2,'0')+':'+String(seconds%60).padStart(2,'0');}
 function progress(){return Views.progress({state,query,expanded,weakOnly});}
 function summary(){return Views.summary({state,week,name});}
 function settings(){
   const s=state.settings,days=[1,2,3,4,5,6,0];
   return '<form id="settings-form"><section class="card"><h2>基本设置</h2><label class="field-label" for="name">称呼</label><input id="name" name="name" maxlength="40" value="'+e(s.name)+'"><div class="label-row"><label class="field-label" for="exam-date">目标初试日</label><span id="exam-mode" class="pill">'+(s.examDateMode==='auto'?'自动':'手动')+'</span></div><input type="date" name="examDate" id="exam-date" value="'+s.examDate+'"><input type="hidden" name="examDateMode" value="'+s.examDateMode+'"><button type="button" class="text-button date-reset" data-action="auto-date">恢复自动日期</button><p class="help">自动日期最早为 2027-12-20，过期后切换至下一年。它是规划日期，请以官方考试公告为准。</p><label class="field-label" for="daily-hours">每日学习时间</label><div class="hours-input"><input type="number" id="daily-hours" name="dailyHours" min="0.5" max="16" step="0.5" value="'+s.dailyHours+'"><span>小时 / 天</span></div></section>'+
   '<section class="card"><h2>考试科目</h2>'+examFields(s)+'</section><section class="card"><h2>每周学习日</h2><div class="week-options">'+days.map(day=>'<label><input type="checkbox" name="studyDays" value="'+day+'" '+(s.studyDays.includes(day)?'checked':'')+'><span>周'+['日','一','二','三','四','五','六'][day]+'</span></label>').join('')+'</div><p class="help">关闭的日期不安排未完成任务；修改后会重建本周默认计划。</p></section><button type="submit" class="button primary wide save-settings">保存设置</button></form>'+
+  '<section class="card"><h2>学习提醒</h2><button class="setting-row" data-nav="reminders"><span>'+icon('plan',20)+'系统通知与提醒时间</span>'+icon('arrow',16)+'</button></section>'+ 
   '<section class="card"><h2>记录与备份</h2><button class="setting-row" data-action="export"><span>'+icon('history',20)+'导出完整备份</span>'+icon('arrow',16)+'</button><button class="setting-row" data-action="import"><span>'+icon('book',20)+'导入安卓版备份</span>'+icon('arrow',16)+'</button><p class="help">包含计划、掌握程度和学习记录，导入前会再次确认。</p></section>'+
   '<section class="card"><h2>自动恢复</h2><button class="setting-row" data-action="recovery-list"><span>'+icon('history',20)+'查看本机恢复点</span>'+icon('arrow',16)+'</button><p class="help">升级和重要替换操作前自动保留，最多5份；完整备份仍可另存。</p></section>'+
   '<section class="card"><h2>联系我们</h2><p class="developer">轻舟项目开发者</p><p class="email">2024304827@aust.edu.cn</p><div class="actions">'+action('复制邮箱','copy-email')+action('发送邮件','contact')+'</div></section>'+
@@ -75,9 +75,9 @@ function render(){
   if(!state){recovery();return;}
   if(!state.onboardingCompleted){root.innerHTML=onboarding();root.querySelector('#onboarding-form').onsubmit=startOnboarding;return;}
   const savedScroll=window.scrollY;
-  patchHTML(root,'<div class="app-shell" data-view="'+page+'">'+header()+'<main class="page" id="main"><div class="error-panel" id="page-error" role="alert" '+(!error?'hidden':'')+'>'+e(error)+'</div>'+({home,plan,focus,progress,settings,records,summary}[page]||home)()+'</main>'+navigation()+'</div>');
+  patchHTML(root,'<div class="app-shell" data-view="'+page+'">'+header()+'<main class="page" id="main"><div class="error-panel" id="page-error" role="alert" '+(!error?'hidden':'')+'>'+e(error)+'</div>'+({home,plan,focus,progress,settings,records,summary,list:checklist,reminders}[page]||home)()+'</main>'+navigation()+'</div>');
   if(changedPage)animateIn(document.querySelector('main'));
-  if(page==='home'||page==='plan')bindTaskGestures(root,{toggle:toggleTask,edit:page==='plan'?taskMenu:undefined});
+  if(page==='home'||page==='plan'||page==='list')bindTaskGestures(root,{toggle:toggleTask,edit:page!=='home'?taskMenu:undefined});
   if(page==='progress'){
     const input=document.querySelector('#progress-search');
     input.oninput=()=>{const at=input.selectionStart;if(!query&&input.value)beforeSearch=new Set(expanded);query=input.value;if(!query&&beforeSearch){expanded=beforeSearch;beforeSearch=null;}render();const next=document.querySelector('#progress-search');next.focus({preventScroll:true});next.setSelectionRange(at,at);};
@@ -89,6 +89,8 @@ function render(){
   }
   if(page==='focus'){
     const select=document.querySelector('#focus-subject');if(select)select.onchange=()=>focusSubject=select.value;
+    const chosen=document.querySelector('#focus-task');if(chosen)chosen.onchange=()=>{focusTaskId=chosen.value;if(focusTaskId)focusSubject=state.tasks.find(t=>t.id===focusTaskId)?.subject||focusSubject;render();};
+    const minutes=document.querySelector('#focus-minutes');if(minutes)minutes.oninput=()=>{const value=Number(minutes.value);focusDuration=Number.isInteger(value)&&value>=1&&value<=240?value*60:0;};
   }
   if(page==='records'){
     document.querySelector('#record-subject').onchange=event=>{recordsFilter.subject=event.target.value;recordsFilter.page=1;render();};
@@ -117,13 +119,13 @@ async function startOnboarding(event){
 function toggleTask(id){
   let completed=false;
   const ok=commit(base=>{const task=base.tasks.find(item=>item.id===id);if(!task)throw new Error('任务已经变化，请刷新后重试。');completed=!task.done;return Core.toggleTask(base,id);},'');
-  if(ok){globalThis.QingzhouAndroid?.feedback?.();animateIn(root.querySelector('.task-row[data-id="'+CSS.escape(id)+'"] .done-label'));toast(completed?'已完成，继续保持':'已撤销完成');}
+  if(ok){if(completed&&focusTaskId===id&&!state.timer)focusTaskId='';globalThis.QingzhouAndroid?.feedback?.();animateIn(root.querySelector('.task-row[data-id="'+CSS.escape(id)+'"] .done-label'));toast(completed?'已完成，继续保持':'已撤销完成');}
 }
 function startTask(id){
   const task=state.tasks.find(t=>t.id===id);
   if(!task||task.done||task.queued||task.suspended)return;
-  focusSubject=state.timer?.subject||task.subject;
-  if(!state.timer&&!focusCommand('start',{subject:task.subject,taskId:task.id,duration:focusDuration}))return;
+  focusSubject=state.timer?.subject||task.subject;focusTaskId=state.timer?.taskId||task.id;
+  if(!state.timer&&!focusCommand('start',{subject:task.subject,taskId:task.id,duration:focusDuration||1500,mode:focusMode}))return;
     page='focus';render();requestAnimationFrame(()=>window.scrollTo(0,0));
 }
 async function generate(){
@@ -131,12 +133,13 @@ async function generate(){
 }
 function taskMenu(id){
   const task=state.tasks.find(t=>t.id===id);if(!task||task.done)return;
-  const handle=dialogs.open({title:'编辑任务',subtitle:task.title,className:'compact',body:'<div class="menu-actions"><button data-menu="edit">修改内容、日期和时长</button><button data-menu="delay">顺延到下个学习日</button>'+(task.origin==='auto'?'<button data-menu="course">整门课程顺延</button>'+(task.topicId?'<button data-menu="pause">永久暂停知识点</button>':''):'<button class="danger-text" data-menu="delete">删除自加任务</button>')+'<button data-menu="reason">填写未完成原因</button>'+'</div>',footer:'<button class="button secondary wide cancel">取消</button>'});
+  const handle=dialogs.open({title:'编辑任务',subtitle:task.title,className:'compact',body:'<div class="menu-actions"><button data-menu="edit">修改内容、日期和时长</button><button data-menu="delay">顺延到下个学习日</button>'+(task.origin==='auto'?'<button data-menu="course">整门课程顺延</button>'+(task.topicId?'<button data-menu="pause">永久暂停知识点</button>':''):'<button class="danger-text" data-menu="delete">删除自加任务</button>')+'<button data-menu="reminder">设置提醒时间</button><button data-menu="reason">填写未完成原因</button>'+'</div>',footer:'<button class="button secondary wide cancel">取消</button>'});
   handle.element.querySelector('.cancel').onclick=()=>handle.close();
   handle.element.querySelectorAll('[data-menu]').forEach(button=>button.onclick=async()=>{
     const type=button.dataset.menu;
     if(type==='edit'){handle.close();taskForm(task);return;}
     if(type==='reason'){handle.close();missReasonForm(task);return;}
+    if(type==='reminder'){handle.close();taskReminderForm(task);return;}
     if((type==='pause'||type==='delete')&&!await dialogs.confirm({title:type==='pause'?'永久暂停这个知识点？':'删除自加任务？',body:type==='pause'?'恢复前不会自动安排，可以在计划页恢复。':'该自加任务将被删除，不影响其他学习记录。',confirm:type==='pause'?'确认暂停':'确认删除',danger:true}))return;
     const ok=type==='course'?await confirmPlan({type:'course',id},'整门课程顺延？'):planCommand({type,id});
     if(ok){handle.close();render();}
@@ -216,6 +219,13 @@ async function importBackup(raw){
 }
 async function onAction(key){
   switch(key){
+    case 'add-todo':return todoForm();
+    case 'add-reminder':return reminderForm();
+    case 'notification-permission':if(globalThis.QingzhouAndroid?.requestNotifications)globalThis.QingzhouAndroid.requestNotifications();else toast('请在安卓应用中开启系统通知');break;
+    case 'exact-permission':if(globalThis.QingzhouAndroid?.requestExactReminders)globalThis.QingzhouAndroid.requestExactReminders();else toast('请在安卓应用中设置');break;
+    case 'test-notification':try{const reply=globalThis.QingzhouAndroid?.testNotification?.();if(!reply)return toast('测试通知需在安卓应用中发送');const result=JSON.parse(reply);if(!result.ok)throw new Error(result.message);toast('测试通知已发送，请查看通知栏');}catch(error){banner(error.message);}break;
+    case 'rest-options':return restOptions();
+    case 'complete-focused-task':{const task=Organizer.matchingResultTask(state);if(task&&!task.done)toggleTask(task.id);else toast('任务已有变化，请到清单核对');break;}
     case 'generate':return generate();
     case 'generate-from-home':page='plan';render();return generate();
     case 'previous-week':week=Core.addDays(week,-7);render();break;
@@ -232,7 +242,7 @@ async function onAction(key){
     case 'undo-plan':return undoLast();
     case 'recovery-list':return recoveryPanel();
     case 'retry-load':try{store=new Store(createBackend());state=store.state;clearError();render();reconcile();}catch(error){banner(error.message);}break;
-    case 'start-focus':focusSubject=document.querySelector('#focus-subject')?.value||focusSubject;focusCommand('start',{subject:focusSubject,duration:focusDuration});break;
+    case 'start-focus':{focusSubject=document.querySelector('#focus-subject')?.value||focusSubject;const input=document.querySelector('#focus-minutes');if(focusMode==='focus'&&input&&!input.checkValidity()){document.querySelector('#focus-config').open=true;input.reportValidity();return;}if(focusTaskId&&!state.tasks.some(t=>t.id===focusTaskId&&!t.done&&!t.queued&&!t.suspended)){focusTaskId='';render();return toast('任务已有变化，请重新选择');}focusCommand('start',{subject:focusSubject,duration:focusDuration||1500,mode:focusMode,...(focusTaskId?{taskId:focusTaskId}:{})});break;}
     case 'pause':focusCommand('pause');break;
     case 'resume':focusCommand('resume');break;
     case 'end':return endFocus();
@@ -252,6 +262,12 @@ async function onAction(key){
 root.addEventListener('click',event=>{
   const button=event.target.closest('button');if(!button)return;
   if(button.dataset.nav)return void navigate(button.dataset.nav);
+  if(button.dataset.listFilter){listFilter=button.dataset.listFilter;render();return;}
+  if(button.dataset.todoToggle)return void commit(base=>Organizer.toggleTodo(base,button.dataset.todoToggle),'已更新事项');
+  if(button.dataset.todoEdit)return todoForm(button.dataset.todoEdit);
+  if(button.dataset.reminderEdit)return reminderForm(button.dataset.reminderEdit);
+  if(button.dataset.reminderToggle)return void commit(base=>{const next=Core.validateState(base),r=next.reminders.find(r=>r.id===button.dataset.reminderToggle);if(r)r.enabled=!r.enabled;return next;},'提醒已更新');
+  if(button.dataset.focusMode){focusMode=button.dataset.focusMode;render();return;}
   if(button.dataset.action)return void onAction(button.dataset.action);
   if(button.dataset.start)return startTask(button.dataset.start);
   if(button.dataset.edit)return taskMenu(button.dataset.edit);
@@ -277,7 +293,7 @@ function reconcile(){
   try{
     store.load();state=store.state;
     if(store.pending){if(!dialogs.active&&!settingsDirty)render();return;}
-    if(store.raw&&JSON.parse(store.raw).schemaVersion===1){store.save(state);state=store.state;}
+    if(store.raw&&(JSON.parse(store.raw).schemaVersion===1||JSON.parse(store.raw).todos===undefined)){store.save(state);state=store.state;}
     if(state.onboardingCompleted){
       let next=Features.reconcile(state);
       if(!store.backend.focus)next=Core.syncTimer(next);
@@ -295,13 +311,13 @@ function tick(){
     if(store.pending){if(!dialogs.active&&!settingsDirty)render();return;}
     const synced=Core.syncTimer(state);
     if(state.timer&&!synced.timer){
-      try{store.finish(Math.min(Date.now(),state.timer.until));state=store.state;toast('本轮完成，起身活动一下吧');}
+      try{if(store.backend.focus)store.focus('finish');else store.finish(Math.min(Date.now(),state.timer.until));state=store.state;if(!state.timer)toast('本轮结束，按自己的节奏继续');}
       catch(failure){render();banner(failure.message);return;}
     }
     if(page==='focus'&&!dialogs.active){
       if(previous?.id!==state.timer?.id||previous?.running!==state.timer?.running){render();}
       const display=document.querySelector('#clock');
-      if(display)display.textContent=clock(state.timer?Core.syncTimer(state).timer?.remaining??0:focusDuration);
+      if(display){const left=state.timer?Core.syncTimer(state).timer?.remaining??0:focusDuration,shown=state.timer?.mode==='stopwatch'?state.timer.duration-left:!state.timer&&focusMode==='stopwatch'?0:left;display.textContent=clock(shown);display.classList.toggle('long-clock',shown>=3600);}
     }
     if(previous&&!state.timer&&!dialogs.active&&!settingsDirty)render();
     if(state.lastProcessedDate!==today())reconcile();
@@ -313,6 +329,8 @@ window.Qingzhou={
     if(type==='resume')reconcile();
     else if(type==='widgetStart'){reconcile();if(dialogs.active||settingsDirty){toast('先保存或关闭当前编辑，再开始专注');return;}const task=state?.tasks.find(t=>t.date===today()&&!t.done&&!t.queued&&!t.suspended);if(state?.timer)void navigate('focus');else if(task)startTask(task.id);else if(state?.onboardingCompleted)void navigate('plan');}
     else if(type==='focus'){reconcile();void navigate('focus');}
+    else if(type==='reminder'){reconcile();if(!state?.onboardingCompleted)return;if(dialogs.active||settingsDirty){toast('先保存或关闭当前编辑，再查看提醒任务');return;}try{const notice=JSON.parse(value);if(notice.source==='todo')void navigate('list');else if(notice.start){const task=notice.source==='task'?state.tasks.find(t=>t.id===notice.id&&!t.done&&!t.queued&&!t.suspended):state.tasks.find(t=>t.date===today()&&!t.done&&!t.queued&&!t.suspended);if(task)startTask(task.id);else void navigate('list');}else void navigate('list');}catch{void navigate('list');}}
+    else if(type==='notifications'){if(page==='reminders'&&!dialogs.active&&!settingsDirty)render();}
     else if(type==='import')void importBackup(value);
     else if(type==='error'||type==='serviceError')banner(value);
     else if(type==='toast')toast(value);
@@ -331,6 +349,35 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>window.
 
 function refreshNativePending(){if(store?.pending?.native)try{store.load();state=store.state;if(!store.pending&&!dialogs.active&&!settingsDirty){render();toast('本轮专注记录已保存');}}catch(error){banner(error.message);}}
 
+function todoForm(id=null){
+  const old=id?state.todos.find(t=>t.id===id):null;if(id&&!old)return;
+  const handle=dialogs.open({title:old?'编辑待办':'记一件事',subtitle:'不必选课程，也不用估算时长',body:'<form id="todo-form"><label class="field-label" for="todo-title">想做什么</label><input id="todo-title" name="title" required maxlength="200" placeholder="例如：整理错题、打印报名材料" value="'+e(old?.title||'')+'"><label class="field-label" for="todo-date">日期（选填）</label><input type="date" id="todo-date" name="date" value="'+(old?.date||'')+'"><label class="field-label" for="todo-time">通知提醒（选填）</label><input type="time" id="todo-time" name="remindTime" value="'+(old?.remindTime||'')+'"><p class="help">不填日期会留在“全部待办”，日常待办不占学习计划预算。</p></form>',footer:(old?'<button class="button danger delete-todo">删除</button>':'')+'<button class="button primary save-todo">保存事项</button>'});
+  const form=handle.element.querySelector('form'),clean=protectForm(handle,form);
+  const save=()=>{if(!form.reportValidity())return;const fields=Object.fromEntries(new FormData(form));if(commit(base=>Organizer.saveTodo(base,fields,id),'事项已记下')){clean();handle.close();render();if(fields.remindTime)offerNotifications();}};
+  form.onsubmit=event=>{event.preventDefault();save();};handle.element.querySelector('.save-todo').onclick=save;
+  handle.element.querySelector('.delete-todo')?.addEventListener('click',async()=>{if(await dialogs.confirm({title:'删除这件待办？',body:'只删除这件日常待办，不影响学习任务。',confirm:'删除',danger:true})&&commit(base=>Organizer.deleteTodo(base,id),'已删除')){clean();handle.close();render();}});
+}
+function reminderForm(id=null){
+  const old=id?state.reminders.find(r=>r.id===id):null;if(id&&!old)return;
+  const selected=old?.days||state.settings.studyDays;
+  const handle=dialogs.open({title:old?'编辑学习提醒':'固定学习提醒',subtitle:'到时间通过手机系统通知提醒',body:'<form id="reminder-form"><label class="field-label" for="reminder-title">提醒内容</label><input id="reminder-title" name="title" required maxlength="100" value="'+e(old?.title||'开始今天的学习')+'"><label class="field-label" for="reminder-time">时间</label><input type="time" id="reminder-time" name="time" required value="'+(old?.time||'19:00')+'"><label class="follow-study"><input type="checkbox" name="followStudyDays" '+(old?.followStudyDays!==false?'checked':'')+'>跟随设置中的学习日</label><div class="custom-reminder-days" '+(old?.followStudyDays!==false?'hidden':'')+'><p class="field-label">重复星期</p><div class="week-options">'+[1,2,3,4,5,6,0].map(d=>'<label><input type="checkbox" name="days" value="'+d+'" '+(selected.includes(d)?'checked':'')+'><span>周'+['日','一','二','三','四','五','六'][d]+'</span></label>').join('')+'</div></div><p class="help">通知只提醒你开始，不会自动启动计时或修改任务。</p></form>',footer:(old?'<button class="button danger delete-reminder">删除</button>':'')+'<button class="button primary save-reminder">保存提醒</button>'});
+  const form=handle.element.querySelector('form'),clean=protectForm(handle,form);form.elements.followStudyDays.onchange=()=>{handle.element.querySelector('.custom-reminder-days').hidden=form.elements.followStudyDays.checked;};
+  const save=()=>{if(!form.reportValidity())return;const data=new FormData(form),fields={title:data.get('title'),time:data.get('time'),followStudyDays:data.has('followStudyDays'),days:data.getAll('days').map(Number),enabled:old?.enabled!==false};if(commit(base=>Organizer.saveReminder(base,fields,id),'提醒已保存')){clean();handle.close();render();offerNotifications();}};
+  form.onsubmit=event=>{event.preventDefault();save();};handle.element.querySelector('.save-reminder').onclick=save;
+  handle.element.querySelector('.delete-reminder')?.addEventListener('click',async()=>{if(await dialogs.confirm({title:'删除这条提醒？',body:'对应系统提醒会同步取消。',confirm:'删除',danger:true})&&commit(base=>{const next=Core.validateState(base);next.reminders=next.reminders.filter(r=>r.id!==id);return next;},'提醒已删除')){clean();handle.close();render();}});
+}
+function offerNotifications(){const status=OrganizerView.reminderStatus();if(!status.notifications){if(!status.asked&&globalThis.QingzhouAndroid?.requestNotifications)globalThis.QingzhouAndroid.requestNotifications();else toast('提醒已保存；请在学习提醒页开启系统通知');}}
+function taskReminderForm(task){
+  const handle=dialogs.open({title:'任务提醒',subtitle:task.title,body:'<form id="task-reminder-form"><p class="help">当前安排：'+task.date+'。之后改期会跟随新日期。</p><label class="field-label" for="task-reminder-time">提醒时间</label><input type="time" name="time" id="task-reminder-time" required value="'+(state.taskReminders[task.id]||'19:00')+'"></form>',footer:'<button class="button secondary clear-task-reminder">取消提醒</button><button class="button primary save-task-reminder">保存提醒</button>'});
+  const form=handle.element.querySelector('form'),clean=protectForm(handle,form),save=time=>{if(commit(base=>Organizer.setTaskReminder(base,task.id,time),time?'任务提醒已保存':'已取消任务提醒')){clean();handle.close();render();if(time)offerNotifications();}};
+  handle.element.querySelector('.save-task-reminder').onclick=()=>{if(form.reportValidity())save(form.elements.time.value);};handle.element.querySelector('.clear-task-reminder').onclick=()=>save(null);form.onsubmit=event=>{event.preventDefault();if(form.reportValidity())save(form.elements.time.value);};
+}
+function restOptions(){
+  const handle=dialogs.open({title:'休息一下',subtitle:'不计入学习时长，也不会自动开启下一轮',body:'<form id="rest-form"><label class="field-label" for="rest-minutes">休息时长（分钟）</label><input id="rest-minutes" name="minutes" type="number" inputmode="numeric" min="1" max="120" step="1" required value="5"><div class="duration-options">'+[5,10,15].map(m=>'<button type="button" data-rest-minutes="'+m+'">'+m+' 分钟</button>').join('')+'</div></form>',footer:'<button class="button primary wide start-rest">开始休息</button>'});
+  const form=handle.element.querySelector('form'),clean=protectForm(handle,form);handle.element.querySelectorAll('[data-rest-minutes]').forEach(button=>button.onclick=()=>{form.elements.minutes.value=button.dataset.restMinutes;form.dispatchEvent(new Event('input'));});
+  const start=()=>{if(!form.reportValidity())return;if(focusCommand('start',{subject:state.lastFocusResult?.subject||focusSubject,mode:'break',duration:Number(form.elements.minutes.value)*60})){clean();handle.close();render();}};handle.element.querySelector('.start-rest').onclick=start;form.onsubmit=event=>{event.preventDefault();start();};
+}
+
 function planCommand(command){const ok=commit(base=>Features.evaluatePlan(base,{command}).state,'');if(ok)toast('安排已更新',false,()=>undoLast());return ok;}
 function undoLast(){let skipped=0;const ok=commit(base=>{const result=Features.undoPlan(base);skipped=result.skipped;return result.state;},'');if(ok)toast(skipped?'已撤销可恢复的修改，保留 '+skipped+' 项已完成或已变化内容':'已撤销上次调整');}
 async function confirmPlan(command,title,reason='daily'){
@@ -346,8 +393,8 @@ function adjustmentPanel(){
   handle.element.querySelector('.undo-last')?.addEventListener('click',()=>{undoLast();handle.close();render();});
 }
 function focusCommand(action,fields={}){
-  try{if(store.backend.focus){store.focus(action,{...(state.timer&&action!=='start'?{id:state.timer.id}:{}),...fields});state=store.state;clearError();if(!dialogs.active&&!settingsDirty)render();return true;}
-    const commands={start:s=>Core.startTimer(s,fields.subject,fields.duration),pause:Core.pauseTimer,resume:Core.resumeTimer,cancel:Core.cancelTimer};if(!commands[action])throw new Error('当前操作不可用');return commit(commands[action],'');
+  try{if(store.backend.focus){store.focus(action,{...(state.timer&&action!=='start'?{id:state.timer.id}:{}),...fields});state=store.state;clearError();if(!dialogs.active&&!settingsDirty)render();if(action==='start')offerNotifications();return true;}
+    const commands={start:s=>Core.startTimer(s,fields.subject,fields.duration,Date.now(),fields),pause:Core.pauseTimer,resume:Core.resumeTimer,cancel:Core.cancelTimer};if(!commands[action])throw new Error('当前操作不可用');return commit(commands[action],'');
   }catch(error){try{store.load();state=store.state;}catch{}if(!dialogs.active&&!settingsDirty)render();banner(error.message);return false;}
 }
 function protectForm(handle,form){let dirty=false;form.addEventListener('input',()=>dirty=true);form.addEventListener('change',()=>dirty=true);handle.onClose=async()=>{if(!dirty||await dialogs.confirm({title:'放弃这次修改？',body:'未保存的内容会被放弃。',confirm:'放弃修改'}))handle.close();};return()=>dirty=false;}

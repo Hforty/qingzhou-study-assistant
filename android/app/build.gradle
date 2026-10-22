@@ -9,8 +9,8 @@ android {
         applicationId 'cn.qingzhou.study'
         minSdk 26
         targetSdk 36
-        versionCode providers.gradleProperty('qingzhouVersionCode').getOrElse('3').toInteger()
-        versionName providers.gradleProperty('qingzhouVersionName').getOrElse('1.1.0')
+        versionCode providers.gradleProperty('qingzhouVersionCode').getOrElse('4').toInteger()
+        versionName providers.gradleProperty('qingzhouVersionName').getOrElse('1.2.0')
         testInstrumentationRunner 'cn.qingzhou.study.NativeSmokeInstrumentation'
     }
     signingConfigs {

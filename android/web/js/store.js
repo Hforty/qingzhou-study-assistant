@@ -40,6 +40,7 @@ export class Store {
     const record=frozen.candidate.sessions.find(session=>session.id===frozen.id);
     if(current.timer&&current.timer.id!==frozen.id)throw new Error('当前已有新的专注，请先结束它后重试。');
     if(record)current.sessions.push(record);
+    if(frozen.candidate.lastFocusResult)current.lastFocusResult=frozen.candidate.lastFocusResult;
     current.timer=null;
     return this.save(current,raw);
   }

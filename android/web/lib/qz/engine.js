@@ -34,7 +34,8 @@ export function createState(now = dateKey()) {
     settings: { name: '同学', examDate: autoExamDate(now), examDateMode: 'auto', dailyHours: 4, mathExam: 'math2', englishExam: 'english2', politicsMode: 'light', studyDays: [0, 1, 2, 3, 4, 5, 6] },
     tasks: [], completions: [], sessions: [], progress: {}, pausedTopics: [], defaultWeek: null,
     timer: null, onboardingCompleted: false, lastProcessedDate: now, nextId: 1,
-    weakPoints: {}, weeklyPlans: {}, weekReports:{}, adjustments: [], lastUndo: null
+    weakPoints: {}, weeklyPlans: {}, weekReports:{}, adjustments: [], lastUndo: null,
+    todos: [], reminders: [], taskReminders: {}, lastFocusResult: null
   };
 }
 
@@ -49,6 +50,13 @@ export function validateState(state) {
   state=copy(state);
   state.schemaVersion=2;
   state.weakPoints??={};state.weeklyPlans??={};state.weekReports??={};state.adjustments??=[];state.lastUndo??=null;
+  state.todos??=[];state.reminders??=[];state.taskReminders??={};state.lastFocusResult??=null;
+  const time=value=>typeof value==='string'&&/^([01]\d|2[0-3]):[0-5]\d$/.test(value);
+  if(!Array.isArray(state.todos)||state.todos.some(t=>!t||typeof t.id!=='string'||!t.id||typeof t.title!=='string'||!t.title.trim()||t.title.length>200||typeof t.done!=='boolean'||t.date!=null&&!validDate(t.date)||t.remindTime!=null&&(!t.date||!time(t.remindTime))||t.completedDate!==undefined&&!validDate(t.completedDate))||new Set(state.todos.map(t=>t.id)).size!==state.todos.length)throw new Error('待办事项损坏。');
+  if(!Array.isArray(state.reminders)||state.reminders.some(r=>!r||typeof r.id!=='string'||!r.id||typeof r.title!=='string'||!r.title.trim()||r.title.length>100||!time(r.time)||typeof r.enabled!=='boolean'||typeof r.followStudyDays!=='boolean'||!Array.isArray(r.days)||new Set(r.days).size!==r.days.length||r.days.some(d=>!Number.isInteger(d)||d<0||d>6)||!r.followStudyDays&&!r.days.length)||new Set(state.reminders.map(r=>r.id)).size!==state.reminders.length)throw new Error('学习提醒损坏。');
+  if(!state.taskReminders||typeof state.taskReminders!=='object'||Array.isArray(state.taskReminders)||Object.entries(state.taskReminders).some(([id,value])=>!id||!time(value)))throw new Error('任务提醒损坏。');
+  const result=state.lastFocusResult;
+  if(result&&(typeof result.id!=='string'||!validDate(result.date)||!subjectById[result.subject]||!Number.isInteger(result.seconds)||result.seconds<0||!['focus','stopwatch','break'].includes(result.mode)||!Number.isFinite(result.endedAt)))throw new Error('专注结束记录损坏。');
   if(state.defaultWeek&&!state.weeklyPlans[state.defaultWeek.week])state.weeklyPlans[state.defaultWeek.week]=copy(state.defaultWeek);
   const s = state.settings;
   if (!s || !['math1', 'math2'].includes(s.mathExam) || !['english1', 'english2'].includes(s.englishExam) ||
@@ -61,7 +69,7 @@ export function validateState(state) {
   if (!state.progress || Object.entries(state.progress).some(([id, item]) => !topicById[id] || !item || ![0, 1, 2, 3].includes(item.level) || !validDate(item.updated))) throw new Error('掌握进度损坏。');
   if (!Array.isArray(state.pausedTopics) || state.pausedTopics.some(item => !topicById[item.topicId] || !validDate(item.week))) throw new Error('暂停规则损坏。');
   if (state.defaultWeek && (!validDate(state.defaultWeek.week) || !Array.isArray(state.defaultWeek.tasks) || state.defaultWeek.tasks.some(task => !validTask(task)))) throw new Error('默认计划损坏。');
-  if (state.timer && (typeof state.timer.id!=='string'||!state.timer.id||!validDate(state.timer.date)||!Number.isFinite(state.timer.until)||state.timer.until<0||!subjectById[state.timer.subject] || ![1500, 3000, 5400].includes(state.timer.duration) || !Number.isInteger(state.timer.remaining) || state.timer.remaining < 0 || state.timer.remaining > state.timer.duration || typeof state.timer.running !== 'boolean')) throw new Error('番茄钟记录损坏。');
+  if (state.timer && (typeof state.timer.id!=='string'||!state.timer.id||!validDate(state.timer.date)||!Number.isFinite(state.timer.until)||state.timer.until<0||!subjectById[state.timer.subject] || !validTimerDuration(state.timer.mode||'focus',state.timer.duration) || !Number.isInteger(state.timer.remaining) || state.timer.remaining < 0 || state.timer.remaining > state.timer.duration || typeof state.timer.running !== 'boolean'||state.timer.taskId!==undefined&&typeof state.timer.taskId!=='string'||state.timer.taskTitle!==undefined&&typeof state.timer.taskTitle!=='string')) throw new Error('番茄钟记录损坏。');
   if(new Set(state.sessions.map(s=>s.id)).size!==state.sessions.length)throw new Error('专注记录存在重复。');
   if(typeof state.weakPoints!=='object'||Array.isArray(state.weakPoints)||Object.entries(state.weakPoints).some(([id,w])=>!topicById[id]||!w||typeof w.reason!=='string'||w.reason.length>500||!validDate(w.dueDate)||!['open','awaiting','resolved'].includes(w.status)||!Number.isInteger(w.cycle)||w.cycle<1))throw new Error('查漏记录损坏。');
   if(typeof state.weeklyPlans!=='object'||Array.isArray(state.weeklyPlans)||Object.entries(state.weeklyPlans).some(([key,w])=>!validDate(key)||w.week!==key||!Array.isArray(w.tasks)||w.tasks.some(t=>!validTask(t))))throw new Error('周原版记录损坏。');
@@ -69,6 +77,7 @@ export function validateState(state) {
   if(!Array.isArray(state.adjustments)||state.adjustments.some(a=>!a||typeof a.id!=='string'||!validDate(a.date)||typeof a.label!=='string'||!Array.isArray(a.changes)))throw new Error('计划调整记录损坏。');
   if(state.lastUndo&&(!Array.isArray(state.lastUndo.tasks)||!Array.isArray(state.lastUndo.rules)||typeof state.lastUndo.label!=='string'))throw new Error('撤销记录损坏。');
   if(state.sessions.some(s=>s.source!==undefined&&!['timer','manual'].includes(s.source)))throw new Error('专注来源损坏。');
+  if(state.sessions.some(s=>s.mode!==undefined&&!['focus','stopwatch'].includes(s.mode)||s.taskId!==undefined&&typeof s.taskId!=='string'||s.taskTitle!==undefined&&typeof s.taskTitle!=='string'))throw new Error('专注任务关联损坏。');
   if (!validDate(state.lastProcessedDate) || !Number.isInteger(state.nextId) || state.nextId < 1) throw new Error('记录元数据损坏。');
   return copy(state);
 }
@@ -332,14 +341,21 @@ export function updateSettings(state, settings, now = dateKey()) {
 }
 export function setLevel(state, topicId, level, now = dateKey()) { const next = copy(state); if (!topicById[topicId] || ![0, 1, 2, 3].includes(level)) throw new Error('掌握程度不正确。'); next.progress[topicId] = { level, updated: now }; return validateState(next); }
 
-export function startTimer(state, subject, duration, nowMs = Date.now()) {
-  const next = copy(state); if (next.timer) return next; if (!subjectById[subject] || ![1500, 3000, 5400].includes(duration)) throw new Error('番茄钟设置不正确。');
-  next.timer = { id: uid('focus'), subject, examTrack: trackFor(subject, next.settings), duration, remaining: duration, running: true, until: nowMs + duration * 1000, date: dateKey(new Date(nowMs)) }; return validateState(next);
+export function validTimerDuration(mode,duration){return Number.isInteger(duration)&&(mode==='stopwatch'?duration===86400:['focus','break'].includes(mode)&&duration>=60&&duration<=(mode==='break'?7200:14400)&&duration%60===0);}
+export function startTimer(state, subject, duration, nowMs = Date.now(), options={}) {
+  const next = copy(state); if (next.timer) return next;const mode=options.mode||'focus';if(mode==='stopwatch')duration=86400;
+  const task=options.taskId?next.tasks.find(t=>t.id===options.taskId):null;
+  if(options.taskId&&(!task||task.done||task.suspended||task.queued))throw new Error('任务已经变化，请重新选择。');
+  if(task)subject=task.subject;
+  if (!subjectById[subject] || !validTimerDuration(mode,duration)) throw new Error('番茄钟设置不正确。');
+  next.timer = { id: uid('focus'), subject, examTrack: task?.examTrack||trackFor(subject, next.settings), duration, mode,remaining: duration, running: true, until: nowMs + duration * 1000, date: dateKey(new Date(nowMs)) };
+  if(task)Object.assign(next.timer,{taskId:task.id,taskTitle:task.title,topicId:task.topicId||''});
+  next.lastFocusResult=null;return validateState(next);
 }
 export function syncTimer(state, nowMs = Date.now()) { const next = copy(state); const t = next.timer; if (!t?.running) return next; t.remaining = Math.max(0, Math.ceil((t.until - nowMs) / 1000)); return t.remaining ? validateState(next) : finishTimer(next, nowMs, false); }
 export function pauseTimer(state, nowMs = Date.now()) { const next = syncTimer(state, nowMs); if (next.timer) { next.timer.running = false; next.timer.until = 0; } return validateState(next); }
 export function resumeTimer(state, nowMs = Date.now()) { const next = copy(state); if (next.timer && !next.timer.running) { next.timer.running = true; next.timer.until = nowMs + next.timer.remaining * 1000; } return validateState(next); }
-export function finishTimer(state, nowMs = Date.now(), early = true) { const next = copy(state), t = next.timer; if (!t) return next; if (t.running) t.remaining = Math.max(0, Math.ceil((t.until - nowMs) / 1000)); const seconds = Math.max(0, t.duration - t.remaining); if (seconds) next.sessions.push({ id: t.id, date: t.date, subject: t.subject, examTrack: t.examTrack, seconds, early }); next.timer = null; return validateState(next); }
+export function finishTimer(state, nowMs = Date.now(), early = true) { const next = copy(state), t = next.timer; if (!t) return next; if (t.running) t.remaining = Math.max(0, Math.min(t.duration,Math.ceil((t.until - nowMs) / 1000)));const mode=t.mode||'focus', seconds=mode==='break'?0:Math.max(0,t.duration-t.remaining),metadata={...(t.taskId?{taskId:t.taskId,taskTitle:t.taskTitle,topicId:t.topicId||''}:{})};if(seconds&&!next.sessions.some(s=>s.id===t.id))next.sessions.push({id:t.id,date:t.date,subject:t.subject,examTrack:t.examTrack,seconds,early,source:'timer',mode,...metadata});next.lastFocusResult={id:t.id,date:t.date,subject:t.subject,examTrack:t.examTrack,seconds,mode,endedAt:nowMs,...metadata};next.timer=null;return validateState(next); }
 export function cancelTimer(state) { const next = copy(state); next.timer = null; return validateState(next); }
 export const formatDuration = seconds => { const h = Math.floor(seconds / 3600), m = Math.floor(seconds % 3600 / 60), s = seconds % 60; return [h ? `${h}小时` : '', m ? `${m}分` : '', s ? `${s}秒` : ''].filter(Boolean).join('') || '0秒'; };
 export function weekStats(state, week = monday(dateKey())) { const all=state.tasks.filter(t=>t.date>=week&&t.date<=weekEnd(week)),list=all.filter(t=>t.done||!t.queued&&!t.suspended); return { total:list.length,done:list.filter(t=>t.done).length,percent:list.length?Math.round(list.filter(t=>t.done).length/list.length*100):0,queued:all.filter(t=>!t.done&&t.queued&&!t.suspended).length,paused:all.filter(t=>!t.done&&t.suspended).length }; }

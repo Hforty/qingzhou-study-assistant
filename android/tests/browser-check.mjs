@@ -80,7 +80,8 @@ try{
     'window.QingzhouAndroid={',
     'readState(){const raw=localStorage.getItem("native-record");return JSON.stringify({ok:true,exists:raw!==null,raw});},',
     'saveState(value,expected){if(window.__failSave)return JSON.stringify({ok:false,message:"测试保存失败"});if(localStorage.getItem("native-record")!==expected)return JSON.stringify({ok:false,message:"测试冲突"});localStorage.setItem("native-record",value);return JSON.stringify({ok:true});},',
-    'version(){return "1.1.0"},feedback(){},copyEmail(){},openContact(){},openReleases(){},exportBackup(raw){window.__exported=raw;},importBackup(){},recoveryList(){return JSON.stringify({ok:true,items:[]});}',
+    'version(){return "1.2.0"},feedback(){},copyEmail(){},openContact(){},openReleases(){},exportBackup(raw){window.__exported=raw;},importBackup(){},recoveryList(){return JSON.stringify({ok:true,items:[]});},',
+    'notificationStatus(){return JSON.stringify({ok:true,notifications:!!window.__notify,focusNotifications:!!window.__notify,exact:!!window.__exact,asked:true});},requestNotifications(){window.__notify=true;Qingzhou.nativeEvent("notifications");},requestExactReminders(){window.__exact=true;Qingzhou.nativeEvent("notifications");},testNotification(){return JSON.stringify(window.__notify?{ok:true}:{ok:false,message:"请先开启学习提醒通知"});},',
     '};'
   ].join('\n');
   await send('Page.addScriptToEvaluateOnNewDocument',{source:bridgeSource});
@@ -212,6 +213,54 @@ try{
     await page('home');await evaluate('document.querySelectorAll("h1,h2,strong,small,p,button,span,input").forEach(x=>{x.style.fontSize=parseFloat(getComputedStyle(x).fontSize)*1.5+"px"})');assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'));await shot('110-320px大字体');
     await send('Emulation.setDeviceMetricsOverride',{width:393,height:852,deviceScaleFactor:1,mobile:true});
   });
+  let todoId,reminderId;
+  await test('任务清单随手记，保存失败及后台返回保留输入',async()=>{
+    await page('list');await click('[data-action=add-todo]');await input('#todo-title','打印报考材料');await evaluate('window.__failSave=true');await click('.save-todo');
+    assert.equal((await state()).todos.length,0);assert.equal(await evaluate('document.querySelector("#todo-title").value'),'打印报考材料');
+    await evaluate('Qingzhou.nativeEvent("resume");window.__failSave=false');assert.equal(await evaluate('document.querySelector("#todo-title").value'),'打印报考材料');
+    await click('.save-todo');todoId=(await state()).todos[0].id;assert.equal((await state()).todos[0].date,null);
+    await click('[data-list-filter=pending]');assert.ok(await evaluate('document.querySelector(".todo-row").textContent.includes("打印报考材料")'));await shot('120-任务清单');
+  });
+  await test('清单事项完成撤销与删除取消，不改变学习任务',async()=>{
+    const count=(await state()).tasks.length;await click('[data-todo-toggle="'+todoId+'"]');assert.equal((await state()).todos[0].done,true);
+    await click('[data-list-filter=done]');await click('[data-todo-toggle="'+todoId+'"]');assert.equal((await state()).todos[0].done,false);
+    await click('[data-list-filter=pending]');await click('[data-todo-edit="'+todoId+'"]');await click('.delete-todo');await click('dialog:last-of-type .cancel');assert.ok((await state()).todos.some(t=>t.id===todoId));await click('dialog .close');assert.equal((await state()).tasks.length,count);
+  });
+  await test('固定提醒创建与开关不重复，支持调用通知设置和测试通知',async()=>{
+    await page('reminders');assert.ok(await evaluate('document.querySelector(".reminder-intro").textContent.includes("未开启")'));await click('[data-action=notification-permission]');assert.equal(await evaluate('document.querySelector(".reminder-intro").textContent.includes("已开启")'),true);
+    await click('[data-action=add-reminder]');await input('#reminder-title','晚间学习');await input('#reminder-time','19:30');await click('.save-reminder');
+    reminderId=(await state()).reminders[0].id;assert.equal((await state()).reminders[0].followStudyDays,true);
+    await click('[data-reminder-toggle="'+reminderId+'"]');assert.equal((await state()).reminders[0].enabled,false);await click('[data-reminder-toggle="'+reminderId+'"]');assert.equal((await state()).reminders.length,1);
+    await click('[data-action=test-notification]');await shot('120-学习提醒');
+  });
+  await test('提醒编辑取消保留原值，提醒保存失败保留输入',async()=>{
+    await click('[data-reminder-edit="'+reminderId+'"]');await input('#reminder-time','20:00');await click('dialog .close');await click('dialog:last-of-type .cancel');assert.equal(await evaluate('document.querySelector("#reminder-time").value'),'20:00');
+    await evaluate('window.__failSave=true');await click('.save-reminder');assert.equal((await state()).reminders[0].time,'19:30');assert.equal(await evaluate('document.querySelector("#reminder-time").value'),'20:00');await evaluate('window.__failSave=false');await click('.save-reminder');assert.equal((await state()).reminders[0].time,'20:00');
+  });
+  await test('学习任务提醒从编辑面板保存，与清单共享完成状态',async()=>{
+    const current=await state(),t=current.tasks.find(t=>!t.done&&!t.queued&&!t.suspended&&t.date===current.lastProcessedDate);assert.ok(t);await page('plan');await click('[data-edit="'+t.id+'"]');await click('[data-menu=reminder]');await input('#task-reminder-time','18:45');await click('.save-task-reminder');assert.equal((await state()).taskReminders[t.id],'18:45');await page('list');await swipe(t.id);assert.equal((await state()).tasks.find(x=>x.id===t.id).done,true);await page('home');assert.ok(await evaluate('document.querySelector(".task-row[data-id='+t.id+']").classList.contains("completed")'));await swipe(t.id);
+  });
+  await test('自定义番茄钟关联具体任务，结束不自动打卡',async()=>{
+    const current=await state(),task=current.tasks.find(t=>!t.done&&!t.queued&&!t.suspended&&t.date===current.lastProcessedDate);
+    await page('focus');assert.ok(await evaluate('document.querySelector(".focus-start-main").getBoundingClientRect().bottom<innerHeight-70'));await click('#focus-config summary');await input('#focus-task',task.id);await input('#focus-minutes','7');await click('[data-action=start-focus]');assert.equal((await state()).timer.duration,420);assert.equal((await state()).timer.taskId,task.id);
+    await sleep(1100);await click('[data-action=end]');await click('dialog .confirm');const after=await state();assert.equal(after.sessions.at(-1).taskId,task.id);assert.equal(after.tasks.find(t=>t.id===task.id).done,false);assert.ok(await evaluate('document.querySelector(".focus-result").textContent.includes("完成这个任务")'));await shot('120-专注结果');
+  });
+  await test('休息计时支持暂停结束，学习记录和任务完成状态不变化',async()=>{
+    const before=await state();await click('[data-action=rest-options]');await click('[data-rest-minutes="10"]');await click('.start-rest');assert.equal((await state()).timer.mode,'break');assert.equal((await state()).timer.duration,600);
+    await click('[data-action=pause]');assert.equal((await state()).timer.running,false);await click('[data-action=resume]');await click('[data-action=end]');await click('dialog .confirm');
+    const after=await state();assert.deepEqual(after.sessions,before.sessions);assert.deepEqual(after.completions,before.completions);assert.equal(after.lastFocusResult.mode,'break');
+  });
+  await test('正计时从零开始，暂停返回及结束后保留实际时长',async()=>{
+    await click('[data-focus-mode=stopwatch]');await click('#focus-config summary');await input('#focus-task','');await click('[data-action=start-focus]');assert.equal((await state()).timer.mode,'stopwatch');assert.ok(await evaluate('document.querySelector("#clock").textContent.startsWith("00:")'));
+    await sleep(1100);await click('[data-action=pause]');const id=(await state()).timer.id;await page('home');await click('.hero-start');assert.equal((await state()).timer.id,id);assert.equal((await state()).timer.running,false);
+    await click('[data-action=resume]');await sleep(1100);await click('[data-action=end]');await click('dialog .confirm');assert.equal((await state()).sessions.at(-1).mode,'stopwatch');assert.ok((await state()).sessions.at(-1).seconds>=2);
+  });
+  await test('新页面小屏、大字体及深色无溢出，减少动画停止计时装饰',async()=>{
+    await send('Emulation.setDeviceMetricsOverride',{width:320,height:700,deviceScaleFactor:1,mobile:true});
+    for(const view of ['list','reminders','focus']){await page(view);assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),view);await evaluate('document.querySelectorAll("h1,h2,strong,small,p,button,span,input,.clock").forEach(x=>{x.style.fontSize=parseFloat(getComputedStyle(x).fontSize)*1.5+"px"})');assert.ok(await evaluate('document.documentElement.scrollWidth<=innerWidth+1'),view+' 大字体');if(view==='focus')assert.ok(await evaluate('document.querySelector("#clock").scrollWidth<=document.querySelector(".timer-orbit").clientWidth'));}
+    await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:'dark'},{name:'prefers-reduced-motion',value:'reduce'}]});await page('focus');assert.equal(await evaluate('getComputedStyle(document.querySelector(".timer-orbit"),"::before").animationName'),'none');await shot('120-深色专注');
+    await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:'light'},{name:'prefers-reduced-motion',value:'no-preference'}]});await send('Emulation.setDeviceMetricsOverride',{width:393,height:852,deviceScaleFactor:1,mobile:true});
+  });
   await test('损坏记录不覆盖，完整备份可恢复',async()=>{
     const backup=await evaluate('(async()=>{const mod=await import("./js/store.js");return mod.makeBackup(QingzhouTest.getState());})()');
     await evaluate('localStorage.setItem("native-record","{broken");location.reload()');await waitFor(()=>evaluate('!!document.querySelector(".recovery")'),'恢复界面');
@@ -222,7 +271,7 @@ try{
   });
   assert.deepEqual(runtimeErrors,[]);
   await sleep(2700);
-  for(const [view,label] of [['home','首页'],['plan','计划'],['progress','进度'],['focus','专注'],['summary','周总结'],['settings','设置']]){await page(view);await evaluate('window.scrollTo({top:0,behavior:"instant"})');await shot('交付-'+label);}
+  for(const [view,label] of [['home','首页'],['plan','计划'],['progress','进度'],['focus','专注'],['summary','周总结'],['settings','设置'],['list','任务清单'],['reminders','学习提醒']]){await page(view);await evaluate('window.scrollTo({top:0,behavior:"instant"})');await shot('交付-'+label);}
   await send('Emulation.setEmulatedMedia',{features:[{name:'prefers-color-scheme',value:'dark'}]});await page('home');await evaluate('window.scrollTo({top:0,behavior:"instant"})');await shot('交付-深色首页');
   await writeFile(resolve(out,'界面验收结果.json'),JSON.stringify({status:'pass',viewport:'393×852 / 320×700',checks,runtimeErrors,scope:'已安装 Edge 执行真实点击与触摸；原生通知和安装需 Android 真机验收'},null,2));
   console.log('UI checks: '+checks.length+' passed');

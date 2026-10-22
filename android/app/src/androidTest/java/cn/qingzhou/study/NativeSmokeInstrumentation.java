@@ -69,6 +69,35 @@ public final class NativeSmokeInstrumentation extends Instrumentation {
             Intent intent=intent().addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP|Intent.FLAG_ACTIVITY_CLEAR_TOP).putExtra("widgetStart",true);target.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));waitJS("!!QingzhouTest.getState().timer");String id=new JSONObject(prefs().getString("qingzhou.android.v1","")).getJSONObject("timer").getString("id");
             target.startActivity(intent);SystemClock.sleep(600);require(id.equals(new JSONObject(prefs().getString("qingzhou.android.v1","")).getJSONObject("timer").getString("id")),"组件重复点击不重复开始");command("cancel");
         });
+        check("native-custom-task-focus-and-rest-exclusion",()->{
+            require(Boolean.TRUE.equals(js("JSON.parse(QingzhouAndroid.focusCommand(JSON.stringify({action:'start',subject:'math',taskId:'widget-task',duration:420}))).ok")),"自定义7分钟");
+            JSONObject timer=new JSONObject(prefs().getString("qingzhou.android.v1","")).getJSONObject("timer");require("widget-task".equals(timer.getString("taskId")),"原生保留任务关联");SystemClock.sleep(1200);command("end");
+            JSONObject before=new JSONObject(prefs().getString("qingzhou.android.v1",""));int count=before.getJSONArray("sessions").length();require("widget-task".equals(before.getJSONObject("lastFocusResult").getString("taskId")),"结束结果关联");
+            require(Boolean.TRUE.equals(js("JSON.parse(QingzhouAndroid.focusCommand(JSON.stringify({action:'start',subject:'math',mode:'break',duration:60}))).ok")),"休息开始");SystemClock.sleep(1100);command("end");
+            JSONObject after=new JSONObject(prefs().getString("qingzhou.android.v1",""));require(after.getJSONArray("sessions").length()==count,"休息不写学习记录");require("break".equals(after.getJSONObject("lastFocusResult").getString("mode")),"保留休息结束状态");
+        });
+        check("native-stopwatch-and-monotonic-deadline",()->{
+            require(Boolean.TRUE.equals(js("JSON.parse(QingzhouAndroid.focusCommand(JSON.stringify({action:'start',subject:'math',mode:'stopwatch'}))).ok")),"正计时开始");SystemClock.sleep(1200);
+            String raw=DataStore.read(target);JSONObject s=new JSONObject(raw);s.getJSONObject("timer").put("until",System.currentTimeMillis()-3600000);DataStore.write(target,s.toString(),raw);command("finish");
+            require(!new JSONObject(DataStore.read(target)).isNull("timer"),"墙上时间变化不使正计时提前结束");command("pause");SystemClock.sleep(1100);command("resume");SystemClock.sleep(1100);command("end");
+            JSONObject focusResult=new JSONObject(DataStore.read(target)).getJSONObject("lastFocusResult");require("stopwatch".equals(focusResult.getString("mode")),"正计时模式");require(focusResult.getInt("seconds")>=2&&focusResult.getInt("seconds")<=5,"正计时排除暂停");
+        });
+        check("native-reminder-schedules-and-completion-cancels",()->{
+            String tomorrow=new java.text.SimpleDateFormat("yyyy-MM-dd",java.util.Locale.ROOT).format(new java.util.Date(System.currentTimeMillis()+86400000));
+            js("(QingzhouTest.getStore().update(s=>({...s,reminders:[],todos:[],taskReminders:{'notify-task':'12:00'},tasks:[...s.tasks,{id:'notify-task',subject:'math',title:'通知验收',date:'"+tomorrow+"',minutes:20,kind:'learn',origin:'manual',done:false}]})),true)");
+            require(ReminderManager.prefs(target).getLong("nextAt",0)>System.currentTimeMillis(),"系统已安排下一提醒");
+            js("(QingzhouTest.getStore().update(s=>({...s,tasks:s.tasks.map(t=>t.id==='notify-task'?{...t,done:true}:t)})),true)");
+            require(ReminderManager.prefs(target).getLong("nextAt",-1)==0,"完成任务取消最后一条提醒");
+            require(Boolean.TRUE.equals(js("JSON.parse(QingzhouAndroid.notificationStatus()).ok")),"真实通知能力查询");
+        });
+        check("native-reminder-notify-dedup-and-snooze-invalidation",()->{
+            long now=System.currentTimeMillis();String date=ReminderManager.day(now),time=new java.text.SimpleDateFormat("HH:mm",java.util.Locale.ROOT).format(new java.util.Date(now));long occurrence=ReminderManager.at(date,time);
+            String raw=DataStore.read(target);JSONObject s=new JSONObject(raw);JSONArray todos=new JSONArray().put(new JSONObject().put("id","notify-todo").put("title","通知去重验收").put("date",date).put("done",false).put("remindTime",time));s.put("todos",todos);DataStore.write(target,s.toString(),raw);ReminderManager.prefs(target).edit().putLong("nextAt",occurrence).putString("seen","{}").commit();
+            ReminderManager.receive(target,"tick","");String key="todo:notify-todo:"+occurrence;JSONObject active=new JSONObject(ReminderManager.prefs(target).getString("active","{}"));require(active.has(key),"真实系统通知已发布");
+            ReminderManager.receive(target,"tick","");require(new JSONObject(ReminderManager.prefs(target).getString("active","{}")).length()==active.length(),"重复接收不增加通知");
+            ReminderManager.receive(target,"snooze",key);require(new JSONObject(ReminderManager.prefs(target).getString("snoozes","{}")).has(key),"稍后提醒已持久保存");
+            raw=DataStore.read(target);s=new JSONObject(raw);s.getJSONArray("todos").getJSONObject(0).put("done",true);DataStore.write(target,s.toString(),raw);require(new JSONObject(ReminderManager.prefs(target).getString("snoozes","{}")).length()==0,"完成事项后稍后提醒同步取消");
+        });
         result.putString("stream","\nOK ("+checks.length()+" native WebView checks)\n");result.putString("checks",checks.toString());finish(Activity.RESULT_OK,result);
     }catch(Throwable error){result.putString("stream","\nFAILURE: "+android.util.Log.getStackTraceString(error));result.putString("checks",checks.toString());finish(Activity.RESULT_CANCELED,result);}finally{if(target!=null)prefs().edit().remove("debugFailWrites").commit();}}
     private SharedPreferences prefs(){return target.getSharedPreferences("qingzhou.records",Context.MODE_PRIVATE);}

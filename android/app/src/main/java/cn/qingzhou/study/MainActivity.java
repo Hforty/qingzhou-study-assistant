@@ -83,13 +83,14 @@ public class MainActivity extends Activity {
         if(Build.VERSION.SDK_INT>=33)getOnBackInvokedDispatcher().registerOnBackInvokedCallback(android.window.OnBackInvokedDispatcher.PRIORITY_DEFAULT,this::handleBack);
     }
     @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);dispatchIntent();}
-    private void dispatchIntent(){if(getIntent().getBooleanExtra("widgetStart",false)){getIntent().removeExtra("widgetStart");notifyWeb("widgetStart",null);}else if(getIntent().getBooleanExtra("focus",false)){getIntent().removeExtra("focus");notifyWeb("focus",null);}}
+    private void dispatchIntent(){if(getIntent().hasExtra("reminderSource")){try{JSONObject payload=new JSONObject().put("source",getIntent().getStringExtra("reminderSource")).put("id",getIntent().getStringExtra("reminderId")).put("start",getIntent().getBooleanExtra("reminderStart",false));notifyWeb("reminder",payload.toString());getIntent().removeExtra("reminderSource");}catch(Exception ignored){}}else if(getIntent().getBooleanExtra("widgetStart",false)){getIntent().removeExtra("widgetStart");notifyWeb("widgetStart",null);}else if(getIntent().getBooleanExtra("focus",false)){getIntent().removeExtra("focus");notifyWeb("focus",null);}}
     @Override protected void onResume() {
         super.onResume();
         applyAppearance();
-        if(web!=null){web.onResume();notifyWeb("resume",null);notifyWeb("appearance",null);syncService();}
+        if(web!=null){web.onResume();notifyWeb("resume",null);notifyWeb("appearance",null);ReminderManager.sync(this);syncService();}
     }
     @Override protected void onPause() { if(web!=null)web.onPause();super.onPause(); }
+    @Override public void onRequestPermissionsResult(int requestCode,String[] permissions,int[] results){super.onRequestPermissionsResult(requestCode,permissions,results);if(requestCode==NOTIFY){ReminderManager.sync(this);notifyWeb("notifications",null);}}
     @Override public void onConfigurationChanged(android.content.res.Configuration config){super.onConfigurationChanged(config);applyAppearance();notifyWeb("appearance",null);}
     private void applyAppearance(){if(web==null)return;boolean dark=(getResources().getConfiguration().uiMode&android.content.res.Configuration.UI_MODE_NIGHT_MASK)==android.content.res.Configuration.UI_MODE_NIGHT_YES;int color=dark?Color.rgb(17,28,22):Color.rgb(244,247,242);getWindow().setStatusBarColor(color);getWindow().setNavigationBarColor(color);web.setBackgroundColor(color);if(web.getParent() instanceof View)((View)web.getParent()).setBackgroundColor(color);web.getSettings().setTextZoom(Math.round(getResources().getConfiguration().fontScale*100));if(Build.VERSION.SDK_INT>=30&&getWindow().getInsetsController()!=null){int mask=android.view.WindowInsetsController.APPEARANCE_LIGHT_STATUS_BARS|android.view.WindowInsetsController.APPEARANCE_LIGHT_NAVIGATION_BARS;getWindow().getInsetsController().setSystemBarsAppearance(dark?0:mask,mask);}else{getWindow().getDecorView().setSystemUiVisibility(dark?0:View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR|View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR);}}
     @Override public void onBackPressed() {
@@ -112,11 +113,6 @@ public class MainActivity extends Activity {
                 JSONObject state=raw==null?null:new JSONObject(raw);
                 boolean hasTimer=state!=null && !state.isNull("timer");
                 if(hasTimer) {
-                    if(Build.VERSION.SDK_INT>=33 && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED
-                        && !getPreferences(MODE_PRIVATE).getBoolean("notificationAsked",false)) {
-                        getPreferences(MODE_PRIVATE).edit().putBoolean("notificationAsked",true).apply();
-                        requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, NOTIFY);
-                    }
                     startForegroundService(new Intent(this, FocusService.class));
                 } else stopService(new Intent(this, FocusService.class));
             } catch(Exception error) { notifyWeb("serviceError","后台提醒暂不可用，返回应用后将按时间校准。"); }
@@ -148,6 +144,10 @@ public class MainActivity extends Activity {
         @JavascriptInterface public String focusCommand(String command){try{FocusController.command(MainActivity.this,new JSONObject(command));syncService();return "{\"ok\":true}";}catch(Exception e){return failure(e);}}
         @JavascriptInterface public String pendingFocus(){try{JSONObject pending=FocusController.pending(MainActivity.this);return new JSONObject().put("ok",true).put("pending",pending==null?JSONObject.NULL:pending).toString();}catch(Exception e){return failure(e);}}
         @JavascriptInterface public long stateRevision(){return DataStore.revision(MainActivity.this);}
+        @JavascriptInterface public String notificationStatus(){try{return ReminderManager.status(MainActivity.this).toString();}catch(Exception e){return failure(e);}}
+        @JavascriptInterface public String testNotification(){try{ReminderManager.test(MainActivity.this);return "{\"ok\":true}";}catch(Exception e){return failure(e);}}
+        @JavascriptInterface public void requestNotifications(){runOnUiThread(()->{ReminderManager.channels(MainActivity.this);if(Build.VERSION.SDK_INT>=33&&checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)!=PackageManager.PERMISSION_GRANTED&&!getSharedPreferences("qingzhou.notifications",MODE_PRIVATE).getBoolean("notificationAsked",false)){getSharedPreferences("qingzhou.notifications",MODE_PRIVATE).edit().putBoolean("notificationAsked",true).apply();requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},NOTIFY);}else startActivity(new Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE,getPackageName()));});}
+        @JavascriptInterface public void requestExactReminders(){runOnUiThread(()->{try{if(Build.VERSION.SDK_INT>=31&&!ReminderManager.exact(MainActivity.this))startActivity(new Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM,Uri.parse("package:"+getPackageName())));else notifyWeb("toast","准时提醒授权已开启");}catch(Exception e){notifyWeb("error","请在手机设置中检查闹钟与提醒授权。");}});}
         @JavascriptInterface public String recoveryList(){try{return new JSONObject().put("ok",true).put("items",RecoveryStore.list(MainActivity.this)).toString();}catch(Exception e){return failure(e);}}
         @JavascriptInterface public String recoveryRead(String id){try{return new JSONObject().put("ok",true).put("raw",RecoveryStore.read(MainActivity.this,id)).toString();}catch(Exception e){return failure(e);}}
         @JavascriptInterface public boolean reducedMotion(){return android.provider.Settings.Global.getFloat(getContentResolver(),android.provider.Settings.Global.ANIMATOR_DURATION_SCALE,1f)==0f;}

@@ -38,11 +38,11 @@ final class DataStore {
             if (!Objects.equals(previous, expected))
                 throw new IllegalStateException("学习记录刚在后台更新，请重试本次操作。");
             String today=new java.text.SimpleDateFormat("yyyy-MM-dd",java.util.Locale.ROOT).format(new java.util.Date());
-            boolean migrate=previous!=null&&valid(previous)&&newSchema(previous)!=newSchema(raw);
+            boolean migrate=previous!=null&&valid(previous)&&(newSchema(previous)!=newSchema(raw)||!BuildConfig.VERSION_NAME.equals(previousVersion));
             boolean checkpoint=previous!=null&&valid(previous)&&(migrate||!today.equals(data.getString("recoveryDay",""))||java.util.Arrays.asList("import","restore","default").contains(reason));
             if(checkpoint)RecoveryStore.save(context,previous,migrate?"升级前":reason,data.getString("recordAppVersion","1.0.x"));
             boolean success = data.edit().putString(KEY, raw).putLong("recordRevision",previousRevision+1).putString("recordAppVersion",BuildConfig.VERSION_NAME).putString("recoveryDay",checkpoint?today:data.getString("recoveryDay","")).commit();
-            if (success && Objects.equals(data.getString(KEY, null), raw)) {StudyWidget.updateAll(context);return true;}
+            if (success && Objects.equals(data.getString(KEY, null), raw)) {StudyWidget.updateAll(context);ReminderManager.sync(context);return true;}
             SharedPreferences.Editor rollback = data.edit();
             if (previous == null) rollback.remove(KEY); else rollback.putString(KEY, previous);
             rollback.putLong("recordRevision",previousRevision).putString("recordAppVersion",previousVersion).putString("recoveryDay",previousRecoveryDay);
